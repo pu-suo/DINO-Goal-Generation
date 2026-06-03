@@ -95,8 +95,8 @@ def run_dataset(wm, dset, model_cfg, n_traj, horizon, has_targets, device, seed=
             zin = z_full[:, w - nh + 1: w + 1]
             z_pred = wm.predict(zin)
             pred_vis = wm.separate_emb(z_pred)[0]["visual"][:, -1:]   # (1,1,196,384)
-            err = per_patch_l2(pred_vis, z_true[:, w + 1: w + 2])
-            accumulate(err[0], region[w + 1][None], tf_acc)
+            err = per_patch_l2(pred_vis, z_true[:, w + 1: w + 2])  # (1,196)
+            accumulate(err, region[w + 1][None], tf_acc)           # both 2-D (1,196)
 
         # free rollout over horizon H from the first nh frames
         H = min(horizon, S - nh)
