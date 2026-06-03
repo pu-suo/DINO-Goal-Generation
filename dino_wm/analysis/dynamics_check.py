@@ -159,22 +159,46 @@ def main():
                 o, a, st, _ = s.d.get_frames(i, fr); return o, a, st, {"targets": []}
         report["pusht_noise_baseline"] = run_dataset(wm, _NoTgt(base), model_cfg, args.n_traj, args.horizon, False, device)
 
-    # decision heuristic
-    mc = report["multicolor_" + args.split]["free_rollout"]
+    # decision heuristic.
+    # Two questions that actually matter for REUSING the frozen dynamics:
+    #   (1) do the colored decals DRIFT under rollout? -> measured as the marker
+    #       region's rollout-growth RELATIVE TO background, not its absolute error
+    #       (sharp colored edges have high latent error even when copied perfectly,
+    #       so an absolute target/bg ratio mostly reflects edge-difficulty, not drift).
+    #   (2) do the decals hurt prediction of the things we PLAN over (block, pusher)?
+    #       -> block+pusher free-rollout error vs the single-target pusht_noise
+    #       baseline under the SAME (pusht) normalization (controls for action scale).
+    tf = report["multicolor_" + args.split]["teacher_forced_1step"]
+    fr = report["multicolor_" + args.split]["free_rollout"]
     decision = "RETRAIN"
     reasons = []
-    if mc["target"] is not None and mc["background"] is not None:
-        drift = mc["target"] / (mc["background"] + 1e-6)
-        reasons.append(f"target/background free-rollout err ratio = {drift:.2f} (low ~1 => decals stable)")
-        if "pusht_noise_baseline" in report:
-            base_bp = np.mean([report["pusht_noise_baseline"]["free_rollout"][r] for r in ("block", "pusher")])
-            mc_bp = np.mean([mc[r] for r in ("block", "pusher")])
-            ratio = mc_bp / (base_bp + 1e-6)
-            reasons.append(f"block+pusher err vs single-target baseline = {ratio:.2f} (<=1.2 => reuse)")
-            if drift < 1.5 and ratio <= 1.2:
-                decision = "REUSE"
-        elif drift < 1.5:
-            decision = "REUSE (provisional; add --baseline_pusht_noise to confirm block/pusher)"
+
+    marker_stable = False
+    if all(fr[r] is not None and tf[r] is not None for r in ("target", "background")):
+        tgt_growth = fr["target"] / (tf["target"] + 1e-6)
+        bg_growth = fr["background"] / (tf["background"] + 1e-6)
+        drift = tgt_growth / (bg_growth + 1e-6)
+        reasons.append(
+            f"marker drift under rollout = {drift:.2f} "
+            f"(decals grow {tgt_growth:.2f}x vs background {bg_growth:.2f}x; ~1 => copied stably)")
+        marker_stable = drift < 1.3
+
+    planning_ok = None
+    if "pusht_noise_baseline" in report:
+        base_bp = np.mean([report["pusht_noise_baseline"]["free_rollout"][r] for r in ("block", "pusher")])
+        mc_bp = np.mean([fr[r] for r in ("block", "pusher")])
+        ratio = mc_bp / (base_bp + 1e-6)
+        reasons.append(
+            f"block+pusher free-rollout err vs single-target baseline = {ratio:.2f} "
+            f"(<=1.2 => decals don't degrade manipulation prediction)")
+        planning_ok = ratio <= 1.2
+
+    if marker_stable and planning_ok:
+        decision = "REUSE"
+    elif marker_stable and planning_ok is None:
+        decision = "REUSE (provisional; add --baseline_pusht_noise to confirm block/pusher)"
+    elif planning_ok and not marker_stable:
+        decision = "REUSE-WITH-CAUTION (block/pusher fine but markers drift; check goal-marker latents)"
     report["decision"] = decision
     report["reasons"] = reasons
 
