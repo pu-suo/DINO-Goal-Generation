@@ -4,11 +4,10 @@ Multi-color PushT environment.
 Subclasses the frozen-physics `PushTEnv` and changes ONLY the visual layer +
 goal bookkeeping:
 
-* Renders N colored T-targets (decals) as FILLED T's in a single solid color,
-  using the exact block geometry at each target pose -- identical to the stock
-  PushT goal-T render, differing only in hue (muted/pastel). Visual-only: added
-  to neither the pymunk space nor collision handling -> block/pusher physics are
-  byte-for-byte the original.
+* Renders N colored T-target *outlines* (decals): hollow, visual-only, added to
+  neither the pymunk space nor collision handling -> block/pusher physics are
+  byte-for-byte the original. Hollow outlines keep the only SOLID shape the gray
+  block, so block-vs-target stays unambiguous for the model.
 * All N targets are drawn every frame (start included), so the start image is
   identical across instructions for a given physical layout -> text is the only
   disambiguator.
@@ -151,10 +150,11 @@ class PushTMultiColorEnv(PushTEnv):
         self.screen = canvas
         draw_options = DrawOptions(canvas)
 
-        # Draw N colored target T's (decals): FILLED, single solid color, using
-        # the EXACT block geometry at the target pose -- identical to the stock
-        # PushT goal-T render (pusht_env._render_frame), differing only in hue.
-        # Visual only: added to neither the pymunk space nor collision handling.
+        # Draw N colored target T-OUTLINES (decals): hollow, so the only SOLID
+        # shape in the frame is the gray block (the object to push) -- keeps
+        # block-vs-target unambiguous, and at the goal the block sits visibly
+        # INSIDE the named outline. Uses the EXACT block geometry at the target
+        # pose. Visual only: added to neither the pymunk space nor collisions.
         if self.targets is not None:
             for tgt in self.targets:
                 body = self._get_goal_pose_body(tgt["pose"])
@@ -164,7 +164,7 @@ class PushTMultiColorEnv(PushTEnv):
                         for v in shape.get_vertices()
                     ]
                     pts += [pts[0]]
-                    pygame.draw.polygon(canvas, tgt["rgb"], pts)  # filled (no width)
+                    pygame.draw.polygon(canvas, tgt["rgb"], pts, width=self.outline_thickness)
 
         # Draw agent (pusher) + block on top.
         self.space.debug_draw(draw_options)

@@ -4,10 +4,10 @@ kwargs:
   with_velocity: true
   with_target: true
   n_targets: 4
-  outline_thickness: 7        # DEPRECATED: targets are now FILLED (kept for cfg compat)
+  outline_thickness: 7        # 512-space px; ~3px at the 224 render size (hollow outlines)
   success_threshold: 0.95     # coverage of the NAMED target for success
   pos_range: [120.0, 392.0]   # target-center range (inset so decals stay in frame)
-  min_sep: 130.0              # min center separation between targets (px); filled T's
+  min_sep: 105.0              # min center separation between targets (px)
   n_bins: 3                   # workspace grid for the color-location split
 
 dataset:

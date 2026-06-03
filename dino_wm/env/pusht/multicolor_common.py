@@ -38,23 +38,22 @@ _TEE_RECT2 = np.array([
 
 
 # --- Color palette ------------------------------------------------------------
-# MUTED / PASTEL, at a lightness comparable to the stock PushT goal color
-# LightGreen (144,238,144). The targets are now drawn as FILLED T's in a single
-# solid color (no separate border) -- i.e. rendered exactly like the stock goal
-# T, differing ONLY in hue. Muting (vs. saturated primaries) keeps the rendered
-# scene close to the dynamics' training distribution while staying mutually
-# distinct and distinct from the RoyalBlue pusher (65,105,225), LightSlateGray
-# block (119,136,153), and white background.
-# Grounding probe (Phase 0.3) validates separability; adjust here if it fails.
+# High-saturation, mutually distinct, and (deliberately) distinct from the
+# RoyalBlue pusher (65,105,225), LightSlateGray block, and white background.
+# Targets are drawn as hollow T-OUTLINES (not filled), so the only SOLID shape
+# in the frame is the gray block (the object to push) -- this keeps block-vs-
+# target unambiguous for the model, and at the goal the block sits visibly
+# INSIDE the named outline (both stay visible). Saturated colors read clearly as
+# thin outlines. Grounding probe (Phase 0.3) validates separability.
 DEFAULT_PALETTE = [
-    ("red", (235, 140, 140)),
-    ("green", (150, 225, 150)),   # ~LightGreen, matches the stock goal color
-    ("blue", (135, 175, 235)),
-    ("yellow", (235, 215, 120)),
-    ("magenta", (225, 150, 215)),
-    ("orange", (245, 185, 120)),
-    ("cyan", (140, 215, 215)),
-    ("purple", (185, 160, 230)),
+    ("red", (220, 30, 30)),
+    ("green", (30, 160, 60)),
+    ("blue", (30, 90, 230)),
+    ("yellow", (235, 200, 25)),
+    ("magenta", (200, 40, 180)),
+    ("orange", (240, 130, 20)),
+    ("cyan", (30, 190, 200)),
+    ("purple", (120, 50, 190)),
 ]
 
 
