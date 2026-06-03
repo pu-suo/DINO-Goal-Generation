@@ -44,7 +44,8 @@ def main():
     ap.add_argument("--combo_split", default="all", choices=["all", "train", "heldout"])
     ap.add_argument("--max_goal_dist", type=float, default=None)
     ap.add_argument("--max_goal_angle", type=float, default=None)
-    ap.add_argument("--out", default="/tmp/mc_tasks.png")
+    ap.add_argument("--out", default="viz_outputs/tasks.png",
+                    help="output PNG (relative paths land under dino_wm/ when run from there)")
     args = ap.parse_args()
 
     allowed = active = None
@@ -80,6 +81,7 @@ def main():
         rows.append(np.full((3, pair.shape[1], 3), 200, np.uint8))  # separator
 
     montage = np.concatenate(rows, axis=0)
+    _os.makedirs(_os.path.dirname(_os.path.abspath(args.out)), exist_ok=True)
     cv2.imwrite(args.out, cv2.cvtColor(montage, cv2.COLOR_RGB2BGR))
     print(f"wrote {args.out}  {montage.shape}  ({args.n} tasks, split={args.combo_split})")
 

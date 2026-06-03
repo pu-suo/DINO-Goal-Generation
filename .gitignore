@@ -25,6 +25,8 @@ __pycache__/
 /dino_wm/latent_cache/
 # Phase-0 analysis artifacts (probe plots, region-error tables, rendered debug frames)
 /dino_wm/analysis_outputs/
+# Task-preview montages from scripts/viz_tasks.py
+/dino_wm/viz_outputs/
 
 # Stray large binaries anywhere
 *.mp4
