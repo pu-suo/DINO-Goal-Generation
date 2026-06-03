@@ -17,7 +17,7 @@ INSTRUCTION_TEMPLATES = [
     (2, "push the block to the {color} marker"),
     (3, "bring the T to the {color} goal"),
     (4, "navigate the T block to the {color} target"),
-    (5, "slide the block onto the {color} outline"),
+    (5, "slide the block onto the {color} region"),
     (6, "to the {color} target, push the T"),
     (7, "align the T with the {color} target"),
     (8, "get the block to the {color} target"),
