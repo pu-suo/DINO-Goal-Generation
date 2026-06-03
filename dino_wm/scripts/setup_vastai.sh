@@ -29,13 +29,19 @@ fi
 source "$CONDA_DIR/etc/profile.d/conda.sh"
 
 echo "==> env $ENV_PREFIX (python $PYV)"
-if [ ! -d "$ENV_PREFIX" ]; then
-  conda create -y -p "$ENV_PREFIX" python=$PYV
+if [ ! -x "$ENV_PREFIX/bin/python" ]; then
+  conda create -y -p "$ENV_PREFIX" python=$PYV pip
 fi
 # Install via the env's OWN python (`conda activate` is unreliable inside a
 # non-interactive script and silently leaves the system pip on PATH). Calling
 # $ENV_PREFIX/bin/python -m pip guarantees everything lands in /workspace/envs/dino_wm.
 PY="$ENV_PREFIX/bin/python"
+# Guarantee pip is in the env: conda create here doesn't always pull it in, and a
+# partial earlier create can leave the env without pip. ensurepip is stdlib;
+# conda install is the fallback.
+"$PY" -m pip --version >/dev/null 2>&1 \
+  || "$PY" -m ensurepip --upgrade \
+  || conda install -y -p "$ENV_PREFIX" pip
 echo "==> upgrade pip (inside the env)"
 "$PY" -m pip install --upgrade pip || true
 
