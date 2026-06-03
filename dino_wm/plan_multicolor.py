@@ -69,7 +69,8 @@ class MultiColorPlanWorkspace(PlanWorkspace):
             mcs.sample_layout(mc["layout_seed_base"] + i, n_targets=mc["n_targets"],
                               with_velocity=True, n_bins=mc["n_bins"],
                               allowed_combos=allowed, active_combos=active,
-                              max_goal_dist=mc.get("max_goal_dist"))
+                              max_goal_dist=mc.get("max_goal_dist"),
+                              max_goal_angle=mc.get("max_goal_angle"))
             for i in range(self.n_evals)
         ]
         self.layouts = layouts

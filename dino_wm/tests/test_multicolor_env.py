@@ -133,6 +133,16 @@ def test_max_goal_dist_constrains_named_target():
     assert abs(rate - chance) < 0.04, f"default decorrelation broke: {rate:.3f}"
 
 
+def test_max_goal_angle_pins_named_orientation():
+    # named target's orientation forced within max_goal_angle of the block start angle
+    eps = 0.2
+    for i in range(60):
+        lay = mcs.sample_layout(8500 + i, n_targets=4, max_goal_dist=120, max_goal_angle=eps)
+        start_th = lay["init_state"][4]
+        dth = (lay["goal_pose"][2] - start_th + np.pi) % (2 * np.pi) - np.pi  # wrap to (-pi,pi]
+        assert abs(dth) <= eps + 1e-6, f"named orientation off by {dth:.3f} > {eps}"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

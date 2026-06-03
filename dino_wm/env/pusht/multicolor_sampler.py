@@ -157,6 +157,7 @@ def sample_layout(
     active_combos=None,
     instruction_held_out=False,
     max_goal_dist=None,
+    max_goal_angle=None,
     max_resamples=200,
 ):
     """Sample one decorrelated, optionally split-constrained layout.
@@ -168,6 +169,11 @@ def sample_layout(
                     easy/fast oracle testing ONLY -- it intentionally BREAKS
                     decorrelation (the named target becomes the nearest one), so
                     never use it for g's dataset or the headline held-out eval.
+    max_goal_angle: if set (radians), the NAMED target's orientation is forced to
+                    within this much of the block's START angle, i.e. ~no rotation
+                    required. Pair with a small max_goal_dist for a TRIVIALLY
+                    reachable goal (sanity-checking the frozen stack). Like
+                    max_goal_dist this is a diagnostic crutch -- not for g/headline.
     """
     rng = np.random.RandomState(seed)
     palette = get_palette(n_targets)
@@ -193,6 +199,12 @@ def sample_layout(
             if len(cand) == 0:
                 continue  # no target close enough; resample the layout
             active_slot = int(rng.choice(cand))
+
+        # Optional: pin the NAMED target's orientation near the block's start angle
+        # so the push needs ~no rotation (trivially-reachable diagnostic goal).
+        if max_goal_angle is not None:
+            angles[active_slot] = init_state[4] + rng.uniform(-max_goal_angle, max_goal_angle)
+
         colors = _assign_colors(
             bins, names, active_slot, allowed_combos,
             active_combos if active_combos is not None else allowed_combos, rng,

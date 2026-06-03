@@ -50,6 +50,10 @@ multicolor:
   max_goal_dist: null               # px; if set, named target within reach of block
                                     # (short push) for fast/easy oracle testing.
                                     # BREAKS decorrelation -- not for the headline eval.
+  max_goal_angle: null              # rad; if set, named target orientation within this
+                                    # of the block START angle (~no rotation needed).
+                                    # Pair w/ small max_goal_dist => trivially-reachable
+                                    # sanity goal. Diagnostic crutch, not for headline.
   use_manipulator_mask: false       # CEM energy drops the pusher patches
   mask_tag: ""                      # set to e.g. _masked for the run dir name
   layout_seed_base: 5000000
