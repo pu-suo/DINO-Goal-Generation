@@ -1,0 +1,53 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: plan_outputs/${now:%Y%m%d%H%M%S}_multicolor_${model_name}_${multicolor.combo_split}${multicolor.mask_tag}
+
+# --- model: shipped PushT dynamics (frozen) reused in the multi-color env ------
+ckpt_base_path: ./checkpoints      # ${ckpt_base_path}/outputs/<model_name>
+model_name: pusht
+model_epoch: latest
+
+seed: 99
+n_evals: 50
+goal_H: 5
+n_plot_samples: 10
+goal_source: named_target          # oracle goal = real frame w/ block at NAMED target
+debug_dset_init: False
+
+objective:
+  _target_: planning.objectives.create_objective_fn
+  alpha: 1                          # set 0 for masked runs (proprio == manipulator)
+  base: 2
+  mode: last
+
+planner:
+  _target_: planning.mpc.MPCPlanner
+  max_iter: null
+  n_taken_actions: 5
+  sub_planner:
+    target: planning.cem.CEMPlanner
+    horizon: 5
+    topk: 30
+    num_samples: 300
+    var_scale: 1
+    opt_steps: 30
+    eval_every: 1
+  name: mpc_cem
+
+# --- multi-color oracle settings ---------------------------------------------
+multicolor:
+  data_path: ${oc.env:DATASET_DIR}/pusht_multicolor   # for the frozen split + (optional) in-dist inits
+  n_targets: 4
+  outline_thickness: 7
+  success_threshold: 0.95
+  n_bins: 3
+  heldout_frac: 0.2
+  split_seed: 0
+  combo_split: heldout              # heldout (HEADLINE) | train | all
+  use_manipulator_mask: false       # CEM energy drops the pusher patches
+  mask_tag: ""                      # set to e.g. _masked for the run dir name
+  layout_seed_base: 5000000
+  stats_source: model               # 'model' = pusht_noise norm (shipped dynamics)

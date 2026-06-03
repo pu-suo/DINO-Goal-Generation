@@ -40,6 +40,9 @@ class CEMPlanner(BasePlanner):
         self.opt_steps = opt_steps
         self.eval_every = eval_every
         self.logging_prefix = logging_prefix
+        # optional (n_evals, P) manipulator-masked energy; set by the multi-color
+        # planning workspace. None -> stock full-grid energy (unchanged behavior).
+        self.patch_mask = None
 
     def init_mu_sigma(self, obs_0, actions=None):
         """
@@ -110,7 +113,8 @@ class CEMPlanner(BasePlanner):
                         act=action,
                     )
 
-                loss = self.objective_fn(i_z_obses, cur_z_obs_g)
+                vis_mask = None if self.patch_mask is None else self.patch_mask[traj]
+                loss = self.objective_fn(i_z_obses, cur_z_obs_g, vis_mask=vis_mask)
                 topk_idx = torch.argsort(loss)[: self.topk]
                 topk_action = action[topk_idx]
                 losses.append(loss[topk_idx[0]].item())

@@ -112,6 +112,25 @@ def angle_diff(a, b):
     return float(np.minimum(d, 2 * np.pi - d))
 
 
+def pusher_patch_mask(agent_xy, img=196, patch=14, sim=512, radius_sim=15, pad=0.6):
+    """(P,) manipulator mask for the CEM energy: 0 at the pusher's patches, 1 else.
+
+    `g` (and the oracle) can't know the arm's goal-time position, so those patches
+    are dropped from the planning cost. agent_xy is in sim (512) coords.
+    """
+    grid = img // patch
+    ax = agent_xy[0] * img / sim
+    ay = agent_xy[1] * img / sim
+    r = radius_sim * img / sim + pad * patch
+    mask = np.ones(grid * grid, dtype=np.float32)
+    for ri in range(grid):
+        for ci in range(grid):
+            cx, cy = (ci + 0.5) * patch, (ri + 0.5) * patch
+            if (cx - ax) ** 2 + (cy - ay) ** 2 <= r * r:
+                mask[ri * grid + ci] = 0.0
+    return mask
+
+
 def tee_centroid_offset(scale=TEE_SCALE):
     """(dx, dy) from the T's body origin to its area centroid in local coords.
 

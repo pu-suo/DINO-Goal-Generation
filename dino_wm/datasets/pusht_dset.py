@@ -1,14 +1,14 @@
 import torch
-import decord
 import pickle
 import numpy as np
 from pathlib import Path
 from einops import rearrange
-from decord import VideoReader
 from typing import Callable, Optional
 from .traj_dset import TrajDataset, TrajSlicerDataset
 from typing import Optional, Callable, Any
-decord.bridge.set_bridge("torch")
+
+# decord is imported lazily in get_frames so this module's stats/constants can be
+# imported on hosts without the video lib (e.g. local Mac dev).
 
 # precomputed dataset stats
 ACTION_MEAN = torch.tensor([-0.0087, 0.0068])
@@ -106,6 +106,9 @@ class PushTDataset(TrajDataset):
         return torch.cat(result, dim=0)
 
     def get_frames(self, idx, frames):
+        import decord
+        from decord import VideoReader
+        decord.bridge.set_bridge("torch")
         vid_dir = self.data_path / "obses"
         reader = VideoReader(str(vid_dir / f"episode_{idx:03d}.mp4"), num_threads=1)
         act = self.actions[idx, frames]

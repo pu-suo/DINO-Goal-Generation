@@ -76,6 +76,45 @@ def rasterize_patch_labels(layout, init_state, n_targets, outline_thickness_sim=
     return labels
 
 
+REGION_NAMES = ["background", "block", "pusher", "target"]
+BG, BLOCK, PUSHER, TARGET = 0, 1, 2, 3
+
+
+def patch_region_labels(block_pose, agent_xy, target_poses, outline_thickness_sim=7,
+                        frac=0.25):
+    """Per-patch region id (N_TOKENS,): background/block/pusher/target.
+
+    Priority block > pusher > target > background (a patch is whatever object
+    most occupies it, breaking ties toward the manipulands). Used to decompose
+    the dynamics prediction error by region in the reuse-vs-retrain check.
+    """
+    blk = np.zeros((IMG, IMG), np.uint8)
+    for rect in tee_world_vertices(np.asarray(block_pose)):
+        cv2.fillPoly(blk, [_sim_to_img(rect).round().astype(np.int32)], 255)
+    psh = np.zeros((IMG, IMG), np.uint8)
+    ax, ay = _sim_to_img(np.asarray(agent_xy))
+    cv2.circle(psh, (int(round(ax)), int(round(ay))), max(1, round(AGENT_RADIUS_SIM * IMG / SIM)), 255, -1)
+    tgt = np.zeros((IMG, IMG), np.uint8)
+    th = max(1, round(outline_thickness_sim * IMG / SIM))
+    for pose in target_poses:
+        for rect in tee_world_vertices(np.asarray(pose)):
+            cv2.polylines(tgt, [_sim_to_img(rect).round().astype(np.int32)], True, 255, th)
+
+    labels = np.full(N_TOKENS, BG, dtype=np.int32)
+    thr = frac * PATCH * PATCH
+    for r in range(GRID):
+        for c in range(GRID):
+            tok = r * GRID + c
+            sl = (slice(r * PATCH, (r + 1) * PATCH), slice(c * PATCH, (c + 1) * PATCH))
+            if (blk[sl] > 0).sum() >= thr:
+                labels[tok] = BLOCK
+            elif (psh[sl] > 0).sum() >= thr:
+                labels[tok] = PUSHER
+            elif (tgt[sl] > 0).sum() >= max(1, thr // 3):
+                labels[tok] = TARGET
+    return labels
+
+
 def load_probe_data(data_path, latent_dir, split):
     start = torch.load(Path(latent_dir) / split / "start_latents.pth").float()
     goal = torch.load(Path(latent_dir) / split / "goal_latents.pth").float()

@@ -5,6 +5,11 @@
 ## What we're building
 A single module, **`g` (the "bridge")**, that maps `(z_start, text)` → a synthesized **per-patch goal latent** in a **frozen** DINO-WM latent space, so the frozen DINO-WM dynamics + CEM planner can reach a **language-specified** goal **without ever being shown a goal image**. Testbed: a modified **multi-color PushT**. Paper 1 = this bridge + a characterization of deterministic-regression behavior on a JEPA/DINO latent.
 
+## Companion docs (read at the right time)
+- `PHASE_0_PLAN.md` — **current phase.** Env build, dataset generation, dynamics reuse/retrain check, oracle ceiling. Does not require knowing `g`.
+- **`docs/G_ARCHITECTURE.md` — the definitive build spec for `g`. READ IN FULL before implementing `g` (Phase 1).** Has the exact tensor shapes, forward pass, loss/mask equations, the frozen-code interfaces, and the validation gates. This file (`CLAUDE.md`) only summarizes it.
+- `docs/RESEARCH_CONTEXT.md` — prior-art landscape + calibrated success estimate. Researcher reference; **not needed to build** — skip unless asked about positioning/novelty.
+
 ## Core mental model (internalize before coding)
 1. **A "goal" is a structured per-patch latent grid (196×384 for DINO-WM), NOT a vector.** `g` synthesizes a spatial scene latent — it is *not* an embedding projection.
 2. **`g` is NOT the action-conditioned (AC) dynamics predictor.** No actions, no time axis, no autoregression, no causal mask, no rollout. `g` is a single-shot `(z_start, text) → z_goal` map. The AC *training recipe* transfers (freeze encoder, train a small module on frozen features with a latent-distance loss); the AC *architecture* does not. **Do not copy the transition ViT's design into `g`.**
@@ -12,6 +17,8 @@ A single module, **`g` (the "bridge")**, that maps `(z_start, text)` → a synth
 4. **`g` grounds; CEM controls.** `g` finds the named color and places the T there in latent space; the existing planner moves the T to match. The planner is untouched.
 
 ## The definitive architecture of `g`
+> **Summary only — `docs/G_ARCHITECTURE.md` is the source of truth.** It spells out tensor shapes/dtypes at every interface, the block-by-block forward pass, the loss and mask equations, the seam to the frozen code, and what "done" means at each stage. Read it in full before writing any `g` code. The bullets below are orientation, not the spec.
+
 - **Form:** DiT-style **bidirectional** transformer over the 196 patch tokens. Single-shot.
 - **Size:** ~**6 layers, 6 heads, width 384** (match the token dim; ~5–10M params). Bigger than the ~19M dynamics model is unnecessary.
 - **Inputs:** `z_start` (196×384 patch tokens) + DINOv2/learned positional embeddings as the token sequence; text from a **frozen** text encoder (sentence-transformer e.g. MiniLM-384, or frozen CLIP text), token-level (not pooled), projected to width 384 by a small trainable MLP.
