@@ -1,38 +1,35 @@
 #!/usr/bin/env bash
-# One-time environment setup on a vast.ai box (Ubuntu + NVIDIA, single RTX 4090).
-# Creates the upstream `dino_wm` conda env and installs MuJoCo 210. Phase 0 needs
-# no deps beyond environment.yaml. Run from the dino_wm/ directory.
-set -euo pipefail
+# Phase-0 environment on a vast.ai GPU box (single RTX 4090).
+#
+# Creates conda env `dino_wm` with exactly the deps PushT + DINO-WM need. We
+# deliberately SKIP mujoco / mujoco-py / d4rl (from the upstream environment.yaml):
+# only point_maze needs them, the pointmaze import is optional in env/__init__.py,
+# and mujoco-py is the main source of setup failures. DINOv2 is fetched at runtime
+# via torch.hub. This is the validated stack (same as the local dev env).
+set -e
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # dino_wm/
-cd "$HERE"
+ENVNAME=${ENVNAME:-dino_wm}
+PYV=3.10
 
-echo "==> conda env create (dino_wm) from environment.yaml"
-if ! conda env list | grep -q '/dino_wm$'; then
-  conda env create -f environment.yaml
-else
-  echo "    env 'dino_wm' already exists; skipping (use 'conda env update -f environment.yaml' to refresh)"
-fi
+echo "==> system libs (headless rendering + video)"
+apt-get update -y && apt-get install -y --no-install-recommends \
+  unzip wget git ffmpeg libgl1 libglib2.0-0 || true
 
-echo "==> MuJoCo 210 (repo env setup expects it; PushT itself is pymunk)"
-if [ ! -d "$HOME/.mujoco/mujoco210" ]; then
-  mkdir -p "$HOME/.mujoco"
-  wget -q https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz -P "$HOME/.mujoco/"
-  tar -xzf "$HOME/.mujoco/mujoco210-linux-x86_64.tar.gz" -C "$HOME/.mujoco"
-fi
-LINE='export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:'"$HOME/.mujoco/mujoco210/bin:/usr/lib/nvidia"
-grep -qF "$LINE" "$HOME/.bashrc" || echo "$LINE" >> "$HOME/.bashrc"
+echo "==> conda env $ENVNAME (python $PYV)"
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda create -y -n "$ENVNAME" python=$PYV
+conda activate "$ENVNAME"
+pip install --upgrade pip
 
-cat <<'EOF'
+echo "==> GPU torch (CUDA build auto-selected on a GPU box)"
+pip install torch torchvision
 
-==> Done. Next:
-    conda activate dino_wm
-    source ~/.bashrc            # MuJoCo LD_LIBRARY_PATH
-    export DATASET_DIR=/data    # must contain pusht_noise/{train,val}
-    export CKPTS=/ckpts         # pusht checkpoint under $CKPTS/outputs/pusht
+echo "==> PushT / DINO-WM runtime deps (OLD gym API — never install gymnasium)"
+pip install "numpy<2" "gym==0.23.1" "pymunk==6.8.0" "pygame==2.5.2" \
+  shapely opencv-python scikit-image einops "hydra-core==1.2.0" "omegaconf==2.3.0" \
+  decord imageio imageio-ffmpeg matplotlib transformers wandb submitit psutil scikit-learn
 
-  Download from OSF (https://osf.io/bmw48/?view_only=a56a296ce3b24cceaf408383a175ce28):
-    - dataset 'pusht_noise'        -> $DATASET_DIR/pusht_noise
-    - checkpoint 'pusht'           -> $CKPTS/outputs/pusht
-  Then follow specs/PHASE_0_RUNBOOK.md (start at 0.0).
-EOF
+echo ""
+echo "==> Done. In your shell run:   conda activate $ENVNAME"
+echo "    Then: export SDL_VIDEODRIVER=dummy   (headless pygame)"
+echo "    Get data with: bash scripts/download_data.sh   (after setting DATASET_DIR + CKPTS)"
