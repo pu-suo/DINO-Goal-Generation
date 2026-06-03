@@ -1,0 +1,25 @@
+name: pusht_multicolor
+args: []
+kwargs:
+  with_velocity: true
+  with_target: true
+  n_targets: 4
+  outline_thickness: 7        # 512-space px; ~3px at the 224 render size
+  success_threshold: 0.95     # coverage of the NAMED target for success
+  pos_range: [120.0, 392.0]   # target-center range (inset so decals stay in frame)
+  min_sep: 105.0              # min center separation between targets (px)
+  n_bins: 3                   # workspace grid for the color-location split
+
+dataset:
+  _target_: "datasets.pusht_multicolor_dset.load_pusht_multicolor_slice_train_val"
+  with_velocity: true
+  n_rollout: null
+  normalize_action: ${normalize_action}
+  data_path: ${oc.env:DATASET_DIR}/pusht_multicolor
+  split_ratio: 0.9
+  transform:
+    _target_: "datasets.img_transforms.default_transform"
+    img_size: ${img_size}
+
+decoder_path: null
+num_workers: 16
