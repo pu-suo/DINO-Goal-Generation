@@ -34,6 +34,7 @@ import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
+import cv2
 import imageio
 
 # allow `python scripts/gen_pusht_multicolor.py` from the repo root
@@ -99,14 +100,19 @@ def generate_one(task):
     gobs, _ = env.reset()
     goal_frame = gobs["visual"]
 
-    # write video + goal frame. Pin libx264 to ONE thread per encode: with many
-    # parallel workers, libx264's default (~one thread/core) x workers explodes
-    # the thread count and the kernel refuses new threads (EAGAIN -> empty mp4).
+    # write video + goal frame. Encode with OpenCV's in-process VideoWriter (mp4v)
+    # rather than imageio/libx264: no ffmpeg subprocess, no auto_scale filtergraph,
+    # no per-encode thread pool -> robust under many parallel workers and tight
+    # container thread/process limits (libx264 was deadlocking with empty output).
+    # cv2 interprets input as BGR; decord reads the file back as RGB (round-trips).
     vid_path = os.path.join(split_dir, "obses", f"episode_{idx:06d}.mp4")
-    with imageio.get_writer(vid_path, fps=fps, macro_block_size=1, codec="libx264",
-                            output_params=["-threads", "1"]) as w:
-        for f in frames:
-            w.append_data(f)
+    h, w_ = frames[0].shape[:2]
+    vw = cv2.VideoWriter(vid_path, cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w_, h))
+    if not vw.isOpened():
+        raise RuntimeError(f"cv2.VideoWriter failed to open {vid_path} (mp4v codec missing?)")
+    for f in frames:
+        vw.write(cv2.cvtColor(np.ascontiguousarray(f), cv2.COLOR_RGB2BGR))
+    vw.release()
     imageio.imwrite(os.path.join(split_dir, "goal_obses", f"episode_{idx:06d}.png"), goal_frame)
 
     label = {
