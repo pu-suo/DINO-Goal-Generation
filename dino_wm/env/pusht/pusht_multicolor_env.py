@@ -4,9 +4,11 @@ Multi-color PushT environment.
 Subclasses the frozen-physics `PushTEnv` and changes ONLY the visual layer +
 goal bookkeeping:
 
-* Renders N colored T-target *outlines* (decals): visual-only, added to neither
-  the pymunk space nor collision handling -> block/pusher physics are byte-for-
-  byte the original. This is what makes shipped-dynamics reuse plausible.
+* Renders N colored T-targets (decals) as FILLED T's in a single solid color,
+  using the exact block geometry at each target pose -- identical to the stock
+  PushT goal-T render, differing only in hue (muted/pastel). Visual-only: added
+  to neither the pymunk space nor collision handling -> block/pusher physics are
+  byte-for-byte the original.
 * All N targets are drawn every frame (start included), so the start image is
   identical across instructions for a given physical layout -> text is the only
   disambiguator.
@@ -149,7 +151,10 @@ class PushTMultiColorEnv(PushTEnv):
         self.screen = canvas
         draw_options = DrawOptions(canvas)
 
-        # Draw N colored target OUTLINES (decals). Visual only.
+        # Draw N colored target T's (decals): FILLED, single solid color, using
+        # the EXACT block geometry at the target pose -- identical to the stock
+        # PushT goal-T render (pusht_env._render_frame), differing only in hue.
+        # Visual only: added to neither the pymunk space nor collision handling.
         if self.targets is not None:
             for tgt in self.targets:
                 body = self._get_goal_pose_body(tgt["pose"])
@@ -159,7 +164,7 @@ class PushTMultiColorEnv(PushTEnv):
                         for v in shape.get_vertices()
                     ]
                     pts += [pts[0]]
-                    pygame.draw.polygon(canvas, tgt["rgb"], pts, width=self.outline_thickness)
+                    pygame.draw.polygon(canvas, tgt["rgb"], pts)  # filled (no width)
 
         # Draw agent (pusher) + block on top.
         self.space.debug_draw(draw_options)

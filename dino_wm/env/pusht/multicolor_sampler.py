@@ -35,7 +35,9 @@ from .instructions import sample_instruction
 from .multicolor_common import get_palette
 
 DEFAULT_POS_RANGE = (120.0, 392.0)   # inset from the 512 frame so T-decals stay visible
-DEFAULT_MIN_SEP = 105.0              # min center separation between targets (px, 512 space)
+DEFAULT_MIN_SEP = 130.0              # min center separation between targets (px, 512 space);
+                                     # targets are FILLED T's (~120px span) so this keeps them
+                                     # from fully occluding each other (no target is drawn on top).
 
 
 # --- workspace binning + combo splits ----------------------------------------
