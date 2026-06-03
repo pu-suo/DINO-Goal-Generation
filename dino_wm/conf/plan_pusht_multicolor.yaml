@@ -47,6 +47,9 @@ multicolor:
   heldout_frac: 0.2
   split_seed: 0
   combo_split: heldout              # heldout (HEADLINE) | train | all
+  max_goal_dist: null               # px; if set, named target within reach of block
+                                    # (short push) for fast/easy oracle testing.
+                                    # BREAKS decorrelation -- not for the headline eval.
   use_manipulator_mask: false       # CEM energy drops the pusher patches
   mask_tag: ""                      # set to e.g. _masked for the run dir name
   layout_seed_base: 5000000

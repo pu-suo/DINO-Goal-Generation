@@ -156,12 +156,18 @@ def sample_layout(
     allowed_combos=None,
     active_combos=None,
     instruction_held_out=False,
+    max_goal_dist=None,
     max_resamples=200,
 ):
     """Sample one decorrelated, optionally split-constrained layout.
 
     allowed_combos: set of (color, bin) every target must satisfy (or None).
     active_combos:  set the *active* target must satisfy (defaults to allowed).
+    max_goal_dist:  if set, the NAMED target is restricted to within this many px
+                    of the block start, i.e. a short reachable push. This is for
+                    easy/fast oracle testing ONLY -- it intentionally BREAKS
+                    decorrelation (the named target becomes the nearest one), so
+                    never use it for g's dataset or the headline held-out eval.
     """
     rng = np.random.RandomState(seed)
     palette = get_palette(n_targets)
@@ -176,8 +182,17 @@ def sample_layout(
         angles = rng.uniform(0.0, 2 * np.pi, size=n_targets)
         bins = [workspace_bin(p, n_bins, pos_range) for p in positions]
 
-        # Decorrelation: active target chosen uniformly, independent of block.
-        active_slot = int(rng.randint(n_targets))
+        # Active-target selection. Default: uniform over slots, independent of the
+        # block (decorrelated; P(named==nearest)=1/N). With max_goal_dist set, pick
+        # the active target from those within reach of the block -> short push.
+        if max_goal_dist is None:
+            active_slot = int(rng.randint(n_targets))
+        else:
+            d_block = np.linalg.norm(positions - init_state[2:4], axis=1)
+            cand = np.where(d_block <= max_goal_dist)[0]
+            if len(cand) == 0:
+                continue  # no target close enough; resample the layout
+            active_slot = int(rng.choice(cand))
         colors = _assign_colors(
             bins, names, active_slot, allowed_combos,
             active_combos if active_combos is not None else allowed_combos, rng,

@@ -122,6 +122,17 @@ def test_combo_split_clean():
     assert {b for _, b in train} == set(range(9))
 
 
+def test_max_goal_dist_constrains_named_target():
+    # with the knob set, the named target is a short push from the block...
+    for i in range(60):
+        lay = mcs.sample_layout(8000 + i, n_targets=4, max_goal_dist=120)
+        d = np.linalg.norm(lay["goal_pose"][:2] - lay["init_state"][2:4])
+        assert d <= 120 + 1e-6, f"named target {d:.1f}px exceeds max_goal_dist=120"
+    # ...and default (None) leaves decorrelation intact
+    rate, chance, _ = mcs.nearest_target_predicts_named(n_samples=2000, n_targets=4, seed=5)
+    assert abs(rate - chance) < 0.04, f"default decorrelation broke: {rate:.3f}"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
