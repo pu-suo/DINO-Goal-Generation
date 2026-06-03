@@ -21,8 +21,9 @@ conda create -y -n "$ENVNAME" python=$PYV
 conda activate "$ENVNAME"
 pip install --upgrade pip
 
-echo "==> GPU torch (CUDA build auto-selected on a GPU box)"
-pip install torch torchvision
+echo "==> GPU torch — pinned to cu121 (repo's stack; the default 'pip install torch'"
+echo "    grabs a cu128 wheel that needs a newer driver than most vast.ai boxes have)"
+pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
 
 echo "==> PushT / DINO-WM runtime deps (OLD gym API — never install gymnasium)"
 pip install "numpy<2" "gym==0.23.1" "pymunk==6.8.0" "pygame==2.5.2" \
