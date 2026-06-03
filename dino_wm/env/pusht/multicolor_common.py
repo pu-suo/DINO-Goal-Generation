@@ -84,6 +84,18 @@ def tee_world_polygon(pose, scale=TEE_SCALE):
     return unary_union([poly1, poly2])
 
 
+def tee_world_vertices(pose, scale=TEE_SCALE):
+    """The two T-rectangles' world vertices (each (4,2)) at pose=(x,y,theta).
+
+    Same convention as tee_world_polygon; used to rasterize the T (block or a
+    target outline) into the DINOv2 input image for the grounding/pose probes.
+    """
+    x, y, theta = float(pose[0]), float(pose[1]), float(pose[2])
+    f = scale / TEE_SCALE
+    t = np.array([x, y])
+    return [_rotate(_TEE_RECT1 * f, theta) + t, _rotate(_TEE_RECT2 * f, theta) + t]
+
+
 def tee_coverage(goal_pose, cur_pose, scale=TEE_SCALE):
     """Fraction of the goal-T area covered by the current-T (the PushT metric)."""
     goal_poly = tee_world_polygon(goal_pose, scale)
