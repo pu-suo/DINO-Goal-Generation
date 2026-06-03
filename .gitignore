@@ -35,3 +35,8 @@ __pycache__/
 # Local scratch
 /scratch/
 *.log
+
+# Agent-generated planning/scaffolding docs — kept locally, excluded from the clean code repo
+/SYNC.md
+/specs/PHASE_0_RUNBOOK.md
+/dino_wm/UPSTREAM.md
