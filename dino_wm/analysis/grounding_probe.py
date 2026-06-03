@@ -21,6 +21,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+# allow `python analysis/grounding_probe.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from analysis.probe_common import (
     load_probe_data, build_grounding_dataset, episode_split, color_id_map)
 

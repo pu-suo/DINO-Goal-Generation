@@ -28,6 +28,9 @@ import torch
 from einops import rearrange
 from omegaconf import OmegaConf
 
+# allow `python analysis/dynamics_check.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from datasets.img_transforms import default_transform
 from datasets.pusht_multicolor_dset import PushTMultiColorDataset
 from datasets.pusht_dset import ACTION_MEAN, ACTION_STD, PROPRIO_MEAN, PROPRIO_STD

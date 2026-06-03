@@ -22,6 +22,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# allow `python analysis/pose_probe.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from analysis.probe_common import load_probe_data, build_pose_dataset, episode_split, SIM
 
 

@@ -28,6 +28,9 @@ import torch
 import imageio.v2 as imageio
 from torchvision import transforms
 
+# allow `python scripts/cache_latents.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from datasets.img_transforms import default_transform
 from datasets.pusht_multicolor_dset import PushTMultiColorDataset
 from models.dino import DinoV2Encoder

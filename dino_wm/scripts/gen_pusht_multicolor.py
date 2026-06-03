@@ -36,6 +36,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import imageio
 
+# allow `python scripts/gen_pusht_multicolor.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from env.pusht.pusht_multicolor_env import PushTMultiColorEnv
 from env.pusht import multicolor_sampler as mcs
 

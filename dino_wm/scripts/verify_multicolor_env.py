@@ -17,6 +17,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# allow `python scripts/verify_multicolor_env.py` from the repo root
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from env.pusht.pusht_multicolor_env import PushTMultiColorEnv
 from env.pusht import multicolor_sampler as mcs
 
