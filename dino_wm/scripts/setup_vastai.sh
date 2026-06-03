@@ -32,16 +32,20 @@ echo "==> env $ENV_PREFIX (python $PYV)"
 if [ ! -d "$ENV_PREFIX" ]; then
   conda create -y -p "$ENV_PREFIX" python=$PYV
 fi
-conda activate "$ENV_PREFIX"
-pip install --upgrade pip
+# Install via the env's OWN python (`conda activate` is unreliable inside a
+# non-interactive script and silently leaves the system pip on PATH). Calling
+# $ENV_PREFIX/bin/python -m pip guarantees everything lands in /workspace/envs/dino_wm.
+PY="$ENV_PREFIX/bin/python"
+echo "==> upgrade pip (inside the env)"
+"$PY" -m pip install --upgrade pip || true
 
 echo "==> GPU torch — pinned to cu121 (repo's stack; the default 'pip install torch'"
 echo "    grabs a cu128 wheel that needs a newer driver than most vast.ai boxes have)"
-python -c "import torch" 2>/dev/null \
-  || pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
+"$PY" -c "import torch" 2>/dev/null \
+  || "$PY" -m pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
 
 echo "==> PushT / DINO-WM runtime deps (OLD gym API — never install gymnasium)"
-pip install "numpy<2" "gym==0.23.1" "pymunk==6.8.0" "pygame==2.5.2" \
+"$PY" -m pip install "numpy<2" "gym==0.23.1" "pymunk==6.8.0" "pygame==2.5.2" \
   shapely opencv-python-headless scikit-image einops "hydra-core==1.2.0" "omegaconf==2.3.0" \
   "hydra-submitit-launcher==1.2.0" \
   decord imageio imageio-ffmpeg matplotlib transformers accelerate wandb submitit psutil scikit-learn
@@ -52,8 +56,11 @@ echo "==> writing $WS/activate.sh (source this in every shell)"
 cat > "$WS/activate.sh" <<EOF
 # Activate the dino_wm env + project env vars. Source after every login/reboot:
 #   source $WS/activate.sh
-source "$CONDA_DIR/etc/profile.d/conda.sh"
-conda activate "$ENV_PREFIX"
+# Try conda (nice prompt + CONDA_PREFIX); always prepend the env bin to PATH so
+# python/pip resolve to the env even if 'conda activate' no-ops in this shell.
+source "$CONDA_DIR/etc/profile.d/conda.sh" 2>/dev/null || true
+conda activate "$ENV_PREFIX" 2>/dev/null || true
+export PATH="$ENV_PREFIX/bin:\$PATH"
 export DATASET_DIR=$WS/data
 export CKPTS=$WS/ckpts
 export SDL_VIDEODRIVER=dummy
