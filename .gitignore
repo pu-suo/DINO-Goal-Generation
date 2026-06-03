@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ---- OS / editor ----
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---- dino_wm runtime outputs (anchored; do NOT match env/wall/data etc.) ----
+/dino_wm/outputs/
+/dino_wm/plan_outputs/
+/dino_wm/multirun/
+/dino_wm/wandb/
+
+# ---- large external / generated artifacts (anchored) ----
+# Downloaded model checkpoints (OSF: pusht / point_maze / wall)
+/dino_wm/checkpoints/
+# Generated multi-color datasets (DATASET_DIR target) + cached DINOv2 latents
+/dino_wm/data/
+/dino_wm/latent_cache/
+# Phase-0 analysis artifacts (probe plots, region-error tables, rendered debug frames)
+/dino_wm/analysis_outputs/
+
+# Stray large binaries anywhere
+*.mp4
+*.pth
+*.npy
+*.npz
+
+# Local scratch
+/scratch/
+*.log
