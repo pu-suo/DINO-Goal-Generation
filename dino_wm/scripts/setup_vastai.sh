@@ -27,9 +27,12 @@ pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorc
 
 echo "==> PushT / DINO-WM runtime deps (OLD gym API — never install gymnasium)"
 pip install "numpy<2" "gym==0.23.1" "pymunk==6.8.0" "pygame==2.5.2" \
-  shapely opencv-python scikit-image einops "hydra-core==1.2.0" "omegaconf==2.3.0" \
+  shapely opencv-python-headless scikit-image einops "hydra-core==1.2.0" "omegaconf==2.3.0" \
   "hydra-submitit-launcher==1.2.0" \
   decord imageio imageio-ffmpeg matplotlib transformers accelerate wandb submitit psutil scikit-learn
+# NOTE: opencv-python-headless (not opencv-python): headless boxes lack libGL, and
+# the non-headless wheel fails to import there. cv2 is used to ENCODE the dataset
+# mp4s in-process (gen_pusht_multicolor) -- robust where ffmpeg/libx264 deadlocks.
 
 echo ""
 echo "==> Done. In your shell run:   conda activate $ENVNAME"
