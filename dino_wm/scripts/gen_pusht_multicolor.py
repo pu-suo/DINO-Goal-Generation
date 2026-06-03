@@ -99,9 +99,12 @@ def generate_one(task):
     gobs, _ = env.reset()
     goal_frame = gobs["visual"]
 
-    # write video + goal frame
+    # write video + goal frame. Pin libx264 to ONE thread per encode: with many
+    # parallel workers, libx264's default (~one thread/core) x workers explodes
+    # the thread count and the kernel refuses new threads (EAGAIN -> empty mp4).
     vid_path = os.path.join(split_dir, "obses", f"episode_{idx:06d}.mp4")
-    with imageio.get_writer(vid_path, fps=fps, macro_block_size=1, codec="libx264") as w:
+    with imageio.get_writer(vid_path, fps=fps, macro_block_size=1, codec="libx264",
+                            output_params=["-threads", "1"]) as w:
         for f in frames:
             w.append_data(f)
     imageio.imwrite(os.path.join(split_dir, "goal_obses", f"episode_{idx:06d}.png"), goal_frame)
@@ -184,7 +187,11 @@ def main():
     ap.add_argument("--n_bins", type=int, default=3)
     ap.add_argument("--render_size", type=int, default=224)
     ap.add_argument("--fps", type=int, default=10)
-    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    ap.add_argument("--workers", type=int,
+                    default=min(12, max(1, (os.cpu_count() or 2) - 1)),
+                    help="parallel episode workers; capped at 12 by default so the per-worker "
+                         "single-threaded ffmpeg encoders don't exhaust kernel threads. Raise "
+                         "cautiously if your box stays stable.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
