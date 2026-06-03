@@ -207,6 +207,12 @@ class Trainer:
         if model_ckpt.exists():
             self.load_ckpt(model_ckpt)
             log.info(f"Resuming from epoch {self.epoch}: {model_ckpt}")
+            # A warm-start ckpt (e.g. the shipped pusht model) may carry a decoder.
+            # load_ckpt restores ALL keys, so it would be prepared + used even when
+            # has_decoder=False -> needless decode and CUDA OOM. Drop it to stay
+            # predictor-only. (The predictor/encoders are still warm-started.)
+            if not self.cfg.has_decoder:
+                self.decoder = None
 
         # initialize encoder
         if self.encoder is None:
