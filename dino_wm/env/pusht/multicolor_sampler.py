@@ -35,7 +35,11 @@ from .instructions import sample_instruction
 from .multicolor_common import get_palette
 
 DEFAULT_POS_RANGE = (120.0, 392.0)   # inset from the 512 frame so T-decals stay visible
-DEFAULT_MIN_SEP = 105.0              # min center separation between targets (px, 512 space)
+DEFAULT_MIN_SEP = 130.0              # min center separation between targets (px, 512 space);
+                                     # moderate spacing -> fewer/shallower outline overlaps
+                                     # (~48% of layouts touch, ~7% area) without regularizing
+                                     # the continuous placement. Decorrelation is independent
+                                     # of this (active slot is chosen uniformly).
 
 
 # --- workspace binning + combo splits ----------------------------------------
