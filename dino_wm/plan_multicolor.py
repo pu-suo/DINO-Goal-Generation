@@ -85,12 +85,30 @@ class MultiColorPlanWorkspace(PlanWorkspace):
         goal_states = init_states.copy()
         for i, l in enumerate(layouts):
             goal_states[i, 2:5] = l["goal_pose"]  # block -> named target
-        if mc.get("hide_goal_pusher", True):
-            # The oracle goal is "block at the named target"; the pusher's goal-time
-            # position is unknowable. Pinning it at its START pose makes the visual
-            # energy fight the push (the block stalls a few px short while the planner
-            # avoids the pusher-mismatch penalty). Move the agent OFF-SCREEN so the
-            # goal frame has no pusher -> the energy scores block + static scene only.
+
+        # Where to put the pusher in the oracle goal. The pusher's true goal-time
+        # pose is unknown, and the choice interacts with objective.alpha (the
+        # proprio/manipulator energy term):
+        #   "hide"   -> pusher off-screen; REQUIRES alpha=0. The energy then gives
+        #               NO signal pulling the pusher toward the block (sparse reward
+        #               -> CEM only solves the configs it stumbles onto). Stalls ~0.3.
+        #   "behind" -> put the pusher where a real push ENDS: just behind the block
+        #               (at the target), on the side it was pushed FROM. With alpha>0
+        #               this restores the dense pusher-approach guidance that makes
+        #               stock PushT planning work (~0.9), without the start-pin bug
+        #               (the start-pin made the energy fight the push). The goal is
+        #               then a plausible, on-manifold real state (block@target +
+        #               pusher behind it), close to stock's real-goal setup.
+        pusher_mode = mc.get("goal_pusher", "hide")
+        if pusher_mode == "behind":
+            offset = float(mc.get("goal_pusher_offset", 40.0))
+            for i in range(len(layouts)):
+                d = goal_states[i, 2:4] - init_states[i, 2:4]  # block start -> target
+                n = float(np.linalg.norm(d))
+                if n > 1e-3:
+                    goal_states[i, 0:2] = goal_states[i, 2:4] - (d / n) * offset
+                # else: ~no translation needed; keep the start pusher pose
+        elif pusher_mode == "hide":
             goal_states[:, 0] = -1000.0
             goal_states[:, 1] = -1000.0
 

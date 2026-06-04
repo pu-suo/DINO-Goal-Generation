@@ -54,10 +54,13 @@ multicolor:
                                     # of the block START angle (~no rotation needed).
                                     # Pair w/ small max_goal_dist => trivially-reachable
                                     # sanity goal. Diagnostic crutch, not for headline.
-  hide_goal_pusher: true            # render the GOAL frame with the pusher off-screen
-                                    # (its goal-time pose is unknowable); stops the energy
-                                    # from forcing the pusher back to a fake pose. Preferred
-                                    # over use_manipulator_mask for the oracle goal.
+  goal_pusher: hide                 # hide | behind. WHERE the pusher sits in the oracle goal.
+                                    #  hide  -> off-screen; pair with objective.alpha=0. No
+                                    #           pusher-approach signal -> sparse reward, ~0.3.
+                                    #  behind-> just behind the block@target (where a real push
+                                    #           ends); pair with objective.alpha=1 to restore the
+                                    #           dense pusher guidance stock PushT relies on.
+  goal_pusher_offset: 40.0          # px behind the block for goal_pusher=behind
   use_manipulator_mask: false       # CEM energy drops the pusher patches (legacy; moot when
                                     # hide_goal_pusher=true since the goal has no pusher)
   mask_tag: ""                      # set to e.g. _masked for the run dir name
