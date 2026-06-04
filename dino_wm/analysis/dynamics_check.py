@@ -123,6 +123,10 @@ def main():
     ap.add_argument("--horizon", type=int, default=10)
     ap.add_argument("--baseline_pusht_noise", default=None, help="path to pusht_noise/val for the single-target baseline")
     ap.add_argument("--out", default="analysis_outputs/dynamics_check.json")
+    ap.add_argument("--stats", default=None,
+                    help="path to a stats.pth (action/proprio mean+std) to normalize with. "
+                         "For a model RETRAINED on multicolor pass "
+                         "$DATASET_DIR/pusht_multicolor/stats.pth; omit for the shipped pusht stats.")
     args, extra = ap.parse_known_args()
     # accept hydra-style "model_name=pusht ckpt_base_path=/x"
     model_name = args.model_name_kw
@@ -132,6 +136,18 @@ def main():
             k, v = tok.split("=", 1)
             if k == "model_name": model_name = v
             elif k == "ckpt_base_path": ckpt = v
+
+    # Normalization stats. Default = pusht constants (correct for the SHIPPED model).
+    # A model RETRAINED on multicolor was trained with multicolor's own action/proprio
+    # stats, so it must be evaluated with those (pass --stats <.../pusht_multicolor/stats.pth>).
+    if args.stats:
+        global ACTION_MEAN, ACTION_STD, PROPRIO_MEAN, PROPRIO_STD
+        _st = torch.load(args.stats)
+        ACTION_MEAN, ACTION_STD = _st["action_mean"], _st["action_std"]
+        PROPRIO_MEAN, PROPRIO_STD = _st["proprio_mean"], _st["proprio_std"]
+        print(f"[stats] normalizing with multicolor stats from {args.stats}")
+    else:
+        print("[stats] normalizing with pusht stats (shipped-model default)")
 
     from plan import load_model  # lazy (pulls submitit/wandb)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
