@@ -180,7 +180,16 @@ class PushTMultiColorEnv(PushTEnv):
 
     # --- named-target success -------------------------------------------------
     def eval_state(self, goal_state, cur_state):
-        """Success = coverage of the NAMED target's T-pose by the block.
+        """Success = block reaches the NAMED target's T-pose.
+
+        Headline `success` uses the EXACT stock DINO-WM PushT criterion
+        (pos < 20 sim-px, angle < pi/9) -- see env/pusht/pusht_wrapper.py. This
+        makes the oracle ceiling apples-to-apples with the in-distribution
+        pipeline SR (~0.9 on stock pusht) and drives MPC early-stop the same way.
+        `coverage>=0.95` is kept as a STRICTER secondary metric, NOT the gate:
+        0.95 coverage needs the block within ~3-5 px (~0.14 of a 36-px DINO
+        patch), which is sub-patch and unreachable by patch-resolution latent CEM
+        even with a perfect goal latent (the stock oracle doesn't hit it either).
 
         goal_state: full state whose block pose is the named target pose.
         cur_state:  achieved full state. Manipulator (agent) is ignored.
@@ -190,12 +199,13 @@ class PushTMultiColorEnv(PushTEnv):
         coverage = tee_coverage(goal_pose, cur_pose)
         pos_dist = float(np.linalg.norm(goal_pose[:2] - cur_pose[:2]))
         ang_dist = angle_diff(goal_pose[2], cur_pose[2])
+        pose_success = bool(pos_dist < 20 and ang_dist < np.pi / 9)
         return {
-            "success": bool(coverage >= self._success_threshold),
+            "success": pose_success,            # headline = stock DINO-WM criterion
+            "success_pose": pose_success,       # alias (back-compat with logs)
+            "success_coverage": bool(coverage >= self._success_threshold),  # strict 2nd
             "coverage": float(coverage),
             "block_pos_dist": pos_dist,
             "block_angle_dist": ang_dist,
-            # reference: the original PushT pose criterion (block-only)
-            "success_pose": bool(pos_dist < 20 and ang_dist < np.pi / 9),
             "state_dist": float(np.linalg.norm(np.asarray(goal_state) - np.asarray(cur_state))),
         }

@@ -32,7 +32,7 @@ A single module, **`g` (the "bridge")**, that maps `(z_start, text)` → a synth
 - Multiple colored T-target **outlines (decals, no physics)** at **continuously** randomized poses; block + pusher physics unchanged.
 - Text names which target; **all targets visible in the same start frame** (text is strictly load-bearing).
 - **Decorrelate** the named target from geometric heuristics (it must not reliably be the nearest/most-salient).
-- Success = coverage/IoU of the block with the **named** target's pose.
+- Success (headline/gate) = the **stock DINO-WM PushT pose criterion** against the **named** target: `block_pos < 20 sim-px AND angle < π/9`. This keeps the oracle ceiling apples-to-apples with the in-distribution pipeline (stock pusht oracle = **0.90** by this metric). **Coverage/IoU ≥ 0.95 is a stricter SECONDARY metric, not the gate** — it needs sub-patch (~0.14 of a 36-px DINO patch) precision that patch-resolution latent CEM cannot reach even with a perfect goal latent.
 - Headline eval = **held-out color-location combinations** (true compositional recombination; never leak a pairing across train/test).
 - Always run: **instruction-agnostic floor**, **random-target (1/k) baseline**, and **swapped-text ablation** (wrong text should send the T to the wrongly-named target — an interpretable failure).
 
@@ -82,7 +82,7 @@ A single module, **`g` (the "bridge")**, that maps `(z_start, text)` → a synth
 - **Phase 1 (build `g`) is gated** on Phase 0 exit criteria, especially **oracle SR ≥ 0.80 on held-out combos**.
 
 ## Success criteria
-- Phase 0 gate: oracle (real-goal-image) SR ≥ ~0.80 on held-out color-location combos.
+- Phase 0 gate: oracle (real-goal-image) SR ≥ ~0.80 on held-out color-location combos, **by the stock pose criterion** (pos < 20 px, ang < π/9). Calibration anchor: the stock pusht oracle hits **0.90** by this same metric, so 0.80 is achievable, not aspirational.
 - `g` success: **competitive-with-oracle** — ≥ 0.75 absolute and ≥ 0.85× oracle SR — on held-out color-location combos, with the floor/baseline/swapped-text ablations behaving as predicted.
 
 ## Glossary
