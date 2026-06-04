@@ -144,3 +144,37 @@ def tee_centroid_offset(scale=TEE_SCALE):
     poly = tee_world_polygon((0.0, 0.0, 0.0), scale)
     c = poly.centroid
     return float(c.x), float(c.y)
+
+
+def contact_pusher_pose(block_start_xy, block_goal_pose, pusher_r=15.0, gap=2.0,
+                        scale=TEE_SCALE):
+    """Plausible, *reachable* goal-time pusher position for a fabricated goal.
+
+    Places the pusher on the trailing contact side of the block-at-goal (the side
+    it was pushed FROM), just OUTSIDE the rotated T silhouette so the pusher circle
+    never overlaps the solid T. Unlike the naive ``behind`` placement
+    (``block_origin - offset*unit(d)``), this accounts for the block heading theta
+    via the T's support distance along the trailing direction, so it is a valid
+    end-of-push state for EVERY pose. (The naive ``behind`` ignores theta and so
+    puts the pusher circle inside/overlapping the T for ~62% of uniformly-rotated
+    goals -- a physically impossible config that corrupts the oracle goal latent.)
+
+    Args:
+        block_start_xy: (2,) block body-origin position at the start.
+        block_goal_pose: (3,) block (x, y, theta) at the goal/named target.
+        pusher_r: pusher circle radius in sim (512) px (PushTEnv add_circle=15).
+        gap: extra clearance (px) between the pusher circle and the T silhouette.
+    Returns:
+        (2,) world pusher position, or None when the block barely translates
+        (no well-defined push direction -> caller should keep the real/start pose).
+    """
+    start = np.asarray(block_start_xy, dtype=np.float64)
+    goal = np.asarray(block_goal_pose, dtype=np.float64)
+    d = goal[:2] - start
+    n = float(np.linalg.norm(d))
+    if n < 1e-3:
+        return None
+    u = -d / n  # trailing direction (opposite the block's motion)
+    verts = np.concatenate(tee_world_vertices(goal, scale), axis=0)  # (8, 2) world
+    h = float(np.max((verts - goal[:2]) @ u))  # T support distance from origin along u
+    return goal[:2] + (h + pusher_r + gap) * u

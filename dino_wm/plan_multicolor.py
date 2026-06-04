@@ -33,7 +33,7 @@ import custom_resolvers  # noqa: F401  (registers ${replace_slash})
 from env.venv import SubprocVectorEnv
 from utils import seed
 from planning.mpc import MPCPlanner
-from env.pusht.multicolor_common import pusher_patch_mask
+from env.pusht.multicolor_common import pusher_patch_mask, contact_pusher_pose
 from env.pusht import multicolor_sampler as mcs
 from plan import PlanWorkspace, load_model
 
@@ -118,6 +118,16 @@ class MultiColorPlanWorkspace(PlanWorkspace):
                 n = float(np.linalg.norm(d))
                 if n > 1e-3:
                     goal_states[i, 0:2] = goal_states[i, 2:4] - (d / n) * offset
+                # else: ~no translation needed; keep the start pusher pose
+        elif pusher_mode == "contact":
+            # Like "behind" but on the REAL contact surface: accounts for the block
+            # heading theta so the pusher is just outside the rotated T and never
+            # overlaps it (naive "behind" overlaps the T for ~62% of rotated goals,
+            # an impossible goal latent). Pair with objective.alpha=1.
+            for i in range(len(layouts)):
+                p = contact_pusher_pose(init_states[i, 2:4], goal_states[i, 2:5])
+                if p is not None:
+                    goal_states[i, 0:2] = p
                 # else: ~no translation needed; keep the start pusher pose
         elif pusher_mode == "hide":
             goal_states[:, 0] = -1000.0

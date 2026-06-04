@@ -58,12 +58,15 @@ multicolor:
                                     # of the block START angle (~no rotation needed).
                                     # Pair w/ small max_goal_dist => trivially-reachable
                                     # sanity goal. Diagnostic crutch, not for headline.
-  goal_pusher: hide                 # hide | behind. WHERE the pusher sits in the oracle goal.
-                                    #  hide  -> off-screen; pair with objective.alpha=0. No
-                                    #           pusher-approach signal -> sparse reward, ~0.3.
-                                    #  behind-> just behind the block@target (where a real push
-                                    #           ends); pair with objective.alpha=1 to restore the
-                                    #           dense pusher guidance stock PushT relies on.
+  goal_pusher: hide                 # hide | behind | contact. WHERE the pusher sits in the oracle goal.
+                                    #  hide   -> off-screen; pair with objective.alpha=0. No
+                                    #            pusher-approach signal -> sparse reward, ~0.3.
+                                    #  behind -> block@target - 40px*unit(travel); IGNORES block
+                                    #            theta so it overlaps the T for ~62% of rotated
+                                    #            goals (impossible goal latent). Kept for A/B only.
+                                    #  contact-> like behind but on the rotated-T contact surface
+                                    #            (never overlaps the T); the reachable/plausible
+                                    #            pusher. Pair with objective.alpha=1.
   goal_pusher_offset: 40.0          # px behind the block for goal_pusher=behind
   use_manipulator_mask: false       # CEM energy drops the pusher patches (legacy; moot when
                                     # hide_goal_pusher=true since the goal has no pusher)

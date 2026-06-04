@@ -274,6 +274,15 @@ class PlanWorkspace:
                         nrm = float(np.linalg.norm(d))
                         if nrm > 1e-3:
                             rsg[i, 0:2] = rsg[i, 2:4] - (d / nrm) * self.goal_pusher_offset
+                elif mode == "contact":
+                    # Reachable trailing-contact pusher (accounts for block theta;
+                    # never overlaps the T, unlike `behind`). state_g block stays real.
+                    from env.pusht.multicolor_common import contact_pusher_pose
+                    s0 = np.asarray(self.state_0)
+                    for i in range(len(rsg)):
+                        p = contact_pusher_pose(s0[i, 2:4], rsg[i, 2:5])
+                        if p is not None:
+                            rsg[i, 0:2] = p
                 elif mode == "offmap":
                     rsg[:, 0:2] = -1000.0
                 elif mode == "random":
