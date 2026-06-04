@@ -16,6 +16,10 @@ goal_H: 5
 n_plot_samples: 10
 goal_source: named_target          # oracle goal = real frame w/ block at NAMED target
 debug_dset_init: False
+# Phase-0 isolation: when goal_source=dset, perturb the (real) goal-frame pusher
+# on the MULTICOLOR model (real|behind|offmap|random). No effect on named_target.
+goal_pusher_perturbation: real
+goal_pusher_offset: 40.0
 
 objective:
   _target_: planning.objectives.create_objective_fn
