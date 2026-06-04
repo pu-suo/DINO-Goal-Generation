@@ -85,6 +85,14 @@ class MultiColorPlanWorkspace(PlanWorkspace):
         goal_states = init_states.copy()
         for i, l in enumerate(layouts):
             goal_states[i, 2:5] = l["goal_pose"]  # block -> named target
+        if mc.get("hide_goal_pusher", True):
+            # The oracle goal is "block at the named target"; the pusher's goal-time
+            # position is unknowable. Pinning it at its START pose makes the visual
+            # energy fight the push (the block stalls a few px short while the planner
+            # avoids the pusher-mismatch penalty). Move the agent OFF-SCREEN so the
+            # goal frame has no pusher -> the energy scores block + static scene only.
+            goal_states[:, 0] = -1000.0
+            goal_states[:, 1] = -1000.0
 
         obs_0, state_0 = self.env.prepare(self.eval_seed, init_states)
         obs_g, state_g = self.env.prepare(self.eval_seed, goal_states)

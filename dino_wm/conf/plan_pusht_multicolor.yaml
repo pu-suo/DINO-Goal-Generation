@@ -54,7 +54,12 @@ multicolor:
                                     # of the block START angle (~no rotation needed).
                                     # Pair w/ small max_goal_dist => trivially-reachable
                                     # sanity goal. Diagnostic crutch, not for headline.
-  use_manipulator_mask: false       # CEM energy drops the pusher patches
+  hide_goal_pusher: true            # render the GOAL frame with the pusher off-screen
+                                    # (its goal-time pose is unknowable); stops the energy
+                                    # from forcing the pusher back to a fake pose. Preferred
+                                    # over use_manipulator_mask for the oracle goal.
+  use_manipulator_mask: false       # CEM energy drops the pusher patches (legacy; moot when
+                                    # hide_goal_pusher=true since the goal has no pusher)
   mask_tag: ""                      # set to e.g. _masked for the run dir name
   layout_seed_base: 5000000
   stats_source: model               # 'model' = pusht_noise norm (shipped dynamics)
