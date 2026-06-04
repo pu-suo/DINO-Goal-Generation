@@ -55,6 +55,17 @@ class MultiColorPlanWorkspace(PlanWorkspace):
             print(f"[mask] dropped {int((masks[0] == 0).sum())} pusher patches/eval from the energy")
 
     def prepare_targets(self):
+        # Real-goal CONTROL. When goal_source != "named_target", plan toward a REAL
+        # reachable multicolor goal -- a real trajectory's endpoint, so block AND
+        # pusher sit in a physically-consistent pose -- with the standard alpha=1
+        # energy (PlanWorkspace's dset/random_state path). This isolates the
+        # dynamics model from the FABRICATED named-target goal:
+        #   SR_control >> SR_named  => the cap is our goal construction (pusher
+        #                              placement), model is fine -> fix the oracle.
+        #   SR_control ~ SR_named   => the model itself is the limit -> rollout-aware
+        #                              retraining is the real lever.
+        if self.goal_source != "named_target":
+            return super().prepare_targets()
         mc = self.mc
         train_combos, test_combos = mcs.make_combo_split(
             mc["n_targets"], mc["n_bins"], mc["heldout_frac"], mc["split_seed"])
