@@ -356,7 +356,9 @@ def load_ckpt(snapshot_path, device):
     loaded_keys = []
     result = {}
     for k, v in payload.items():
-        if k in ALL_MODEL_KEYS:
+        if k in ALL_MODEL_KEYS and v is not None:
+            # skip None entries: a predictor-only ckpt (has_decoder=False) may store
+            # decoder=None; load_model fills decoder=None itself from the cfg.
             loaded_keys.append(k)
             result[k] = v.to(device)
     result["epoch"] = payload["epoch"]
