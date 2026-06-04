@@ -54,3 +54,11 @@ planner:
     eval_every: 1
   name: mpc_cem
 
+# --- Phase-0 isolation tests (defaults below are exact no-ops -> stock ~0.90) ---
+env_with_distractors: false      # TEST 1: render colored T-outline distractors (stock env)
+env_n_distractors: 0             # number of distractor decals (sweep 1..3)
+distractor_outline_thickness: 7  # 512-space px (~3px at render_size=224)
+goal_pusher_perturbation: real   # TEST 2: real | behind | offmap | random (goal-frame pusher)
+goal_pusher_offset: 40.0         # px behind the block@goal for 'behind'
+pose_only_success: false         # TEST 2: block-only success (ignore the manipulator)
+

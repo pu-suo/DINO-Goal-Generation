@@ -136,6 +136,9 @@ class PlanWorkspace:
         self.goal_H = cfg_dict["goal_H"]
         self.action_dim = self.dset.action_dim * self.frameskip
         self.debug_dset_init = cfg_dict["debug_dset_init"]
+        # Phase-0 fake-pusher-isolation test (stock single-T, real block goal):
+        self.goal_pusher_perturbation = cfg_dict.get("goal_pusher_perturbation", "real")
+        self.goal_pusher_offset = float(cfg_dict.get("goal_pusher_offset", 40.0))
 
         objective_fn = hydra.utils.call(
             cfg_dict["objective"],
@@ -258,6 +261,29 @@ class PlanWorkspace:
             }
             self.state_0 = init_state  # (b, d)
             self.state_g = rollout_states[:, -1]  # (b, d)
+            # Phase-0 fake-pusher isolation: re-render ONLY the goal frame with the
+            # pusher moved (the block goal stays the real reachable endpoint).
+            # Success is block-only (env pose_only_success), so we never require the
+            # achieved pusher to reach the fabricated spot. state_g is left REAL.
+            if self.goal_pusher_perturbation != "real":
+                rsg = np.array(self.state_g, dtype=np.float64).copy()
+                mode = self.goal_pusher_perturbation
+                if mode == "behind":
+                    for i in range(len(rsg)):
+                        d = rsg[i, 2:4] - np.asarray(self.state_0)[i, 2:4]
+                        nrm = float(np.linalg.norm(d))
+                        if nrm > 1e-3:
+                            rsg[i, 0:2] = rsg[i, 2:4] - (d / nrm) * self.goal_pusher_offset
+                elif mode == "offmap":
+                    rsg[:, 0:2] = -1000.0
+                elif mode == "random":
+                    rs = np.random.RandomState(self.cfg_dict["seed"])
+                    rsg[:, 0] = rs.uniform(50, 450, size=len(rsg))
+                    rsg[:, 1] = rs.uniform(50, 450, size=len(rsg))
+                else:
+                    raise ValueError(f"unknown goal_pusher_perturbation={mode}")
+                obs_g_p, _ = self.env.prepare(self.eval_seed, rsg)
+                self.obs_g = {k: np.expand_dims(v, axis=1) for k, v in obs_g_p.items()}
             self.gt_actions = wm_actions
 
     def sample_traj_segment_from_dset(self, traj_len):
@@ -460,13 +486,28 @@ def planning_main(cfg_dict):
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
+    # Phase-0 isolation tests: inject decal / block-only-success kwargs for STOCK
+    # pusht only. Env kwargs normally come from the model's saved hydra.yaml (NOT
+    # the plan cfg), so we add these from the plan cfg here; guarded on env.name so
+    # multicolor / maze / wall are untouched.
+    extra_env_kwargs = {}
+    if model_cfg.env.name == "pusht":
+        if cfg_dict.get("env_with_distractors", False):
+            extra_env_kwargs["with_distractors"] = True
+            extra_env_kwargs["n_distractors"] = int(cfg_dict.get("env_n_distractors", 0))
+            extra_env_kwargs["distractor_outline_thickness"] = int(
+                cfg_dict.get("distractor_outline_thickness", 7)
+            )
+        if cfg_dict.get("pose_only_success", False):
+            extra_env_kwargs["pose_only_success"] = True
+
     # use dummy vector env for wall and deformable envs
     if model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
         from env.serial_vector_env import SerialVectorEnv
         env = SerialVectorEnv(
             [
                 gym.make(
-                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs
+                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs, **extra_env_kwargs
                 )
                 for _ in range(cfg_dict["n_evals"])
             ]
@@ -474,9 +515,9 @@ def planning_main(cfg_dict):
     else:
         env = SubprocVectorEnv(
             [
-                lambda: gym.make(
-                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs
-                )
+                (lambda ek=extra_env_kwargs: gym.make(
+                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs, **ek
+                ))
                 for _ in range(cfg_dict["n_evals"])
             ]
         )

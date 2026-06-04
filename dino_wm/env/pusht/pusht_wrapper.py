@@ -6,15 +6,20 @@ from utils import aggregate_dct
 
 class PushTWrapper(PushTEnv):
     def __init__(
-            self, 
+            self,
             with_velocity=True,
             with_target=True,
+            pose_only_success=False,
+            **kwargs,
         ):
         super().__init__(
             with_velocity=with_velocity,
-            with_target=with_target, 
+            with_target=with_target,
+            **kwargs,
         )
         self.action_dim = self.action_space.shape[0]
+        # Phase-0 fake-pusher test: block-only success (ignore the manipulator).
+        self.pose_only_success = pose_only_success
     
     def sample_random_init_goal_states(self, seed):
         """
@@ -60,7 +65,12 @@ class PushTWrapper(PushTEnv):
         [agent_x, agent_y, T_x, T_y, angle, agent_vx, agent_vy]
         """
         # if position difference is < 20, and angle difference < np.pi/9, then success
-        pos_diff = np.linalg.norm(goal_state[:4] - cur_state[:4])
+        if getattr(self, "pose_only_success", False):
+            # block-only: ignore the manipulator (the fake-pusher test renders a
+            # fabricated pusher in the goal we must NOT require the agent to reach).
+            pos_diff = np.linalg.norm(goal_state[2:4] - cur_state[2:4])
+        else:
+            pos_diff = np.linalg.norm(goal_state[:4] - cur_state[:4])
         angle_diff = np.abs(goal_state[4] - cur_state[4])
         angle_diff = np.minimum(angle_diff, 2 * np.pi - angle_diff)
         success = pos_diff < 20 and angle_diff < np.pi / 9

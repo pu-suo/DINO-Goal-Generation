@@ -379,6 +379,9 @@ class PushTEnv(gym.Env):
         with_target=True,
         shape="T",  # shape can be "T" <- the original shape, "I", "L", "Z", "square" and "small_tee"
         color="LightSlateGray",
+        with_distractors=False,
+        n_distractors=0,
+        distractor_outline_thickness=7,
     ):  
         self.shape = shape
         self.color = color
@@ -435,6 +438,12 @@ class PushTEnv(gym.Env):
         self.with_target = with_target
         self.reset_to_state = reset_to_state
         self.coverage_arr = []
+        # Phase-0 distractor-isolation test: optional static colored T-outline
+        # decals (visual-only, no physics) added to the STOCK pusht renderer.
+        self.with_distractors = bool(with_distractors)
+        self.n_distractors = int(n_distractors)
+        self.distractor_outline_thickness = int(distractor_outline_thickness)
+        self.distractor_layout = None
 
     def reset(self):
         self._setup()
@@ -442,6 +451,9 @@ class PushTEnv(gym.Env):
             self.block.center_of_gravity = self.block_cog
         if self.damping is not None:
             self.space.damping = self.damping
+        # Sample static distractor decals deterministically from the episode seed
+        # (set by prepare()), so the start and goal frames share identical clutter.
+        self.distractor_layout = self._sample_distractor_layout(self._seed)
 
         # use legacy RandomState for compatibility
         state = self.reset_to_state
@@ -580,6 +592,24 @@ class PushTEnv(gym.Env):
         body.angle = pose[2]
         return body
 
+    def _sample_distractor_layout(self, seed):
+        """N static distractor T-outline decals (visual-only), sampled
+        deterministically from the env seed so start/goal frames match. Phase-0
+        distractor-isolation test only; returns None when disabled."""
+        if not self.with_distractors or self.n_distractors <= 0:
+            return None
+        from .multicolor_common import get_palette
+        rs = np.random.RandomState(int(seed) if seed is not None else 0)
+        lo, hi = 120.0, 392.0  # keep decals fully on-frame (match multicolor range)
+        layout = []
+        for _name, rgb in get_palette(self.n_distractors):
+            pose = np.array(
+                [rs.uniform(lo, hi), rs.uniform(lo, hi), rs.uniform(-np.pi, np.pi)],
+                dtype=np.float64,
+            )
+            layout.append({"rgb": tuple(int(c) for c in rgb), "pose": pose})
+        return layout
+
     def _get_info(self):
         n_steps = self.sim_hz // self.control_hz
         n_contact_points_per_step = int(np.ceil(self.n_contact_points / n_steps))
@@ -605,6 +635,22 @@ class PushTEnv(gym.Env):
         self.screen = canvas
 
         draw_options = DrawOptions(canvas)
+
+        # Phase-0 distractor decals: hollow T-outlines drawn UNDER the block/goal.
+        if getattr(self, "distractor_layout", None):
+            for d in self.distractor_layout:
+                body = self._get_goal_pose_body(d["pose"])
+                for shape in self.block.shapes:
+                    pts = [
+                        pymunk.pygame_util.to_pygame(
+                            body.local_to_world(v), draw_options.surface
+                        )
+                        for v in shape.get_vertices()
+                    ]
+                    pts += [pts[0]]
+                    pygame.draw.polygon(
+                        canvas, d["rgb"], pts, width=self.distractor_outline_thickness
+                    )
 
         # Draw goal pose.
         goal_body = self._get_goal_pose_body(self.goal_pose)
