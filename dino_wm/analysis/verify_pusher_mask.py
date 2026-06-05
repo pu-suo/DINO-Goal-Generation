@@ -32,23 +32,18 @@ def to_img(arr):
     return a
 
 
-def overlay(img, keep_mask, sim=512):
-    """Tint DROPPED patches red on a HxW image; mask is row-major (ri*GRID + ci)."""
-    img = img.copy()
-    h, w = img.shape[:2]
+def outline_drops(ax, keep_mask, h, w):
+    """Draw red OUTLINES around DROPPED patches (image left untouched underneath, so the
+    blue pusher stays fully visible). Mask is row-major (ri*GRID + ci)."""
+    import matplotlib.patches as mpatches
     ph, pw = h / GRID, w / GRID
     drop = (keep_mask == 0.0).reshape(GRID, GRID)
     for ri in range(GRID):
         for ci in range(GRID):
             if drop[ri, ci]:
-                r0, r1 = int(ri * ph), int((ri + 1) * ph)
-                c0, c1 = int(ci * pw), int((ci + 1) * pw)
-                patch = img[r0:r1, c0:c1].astype(np.float32)
-                patch[..., 0] = 0.6 * patch[..., 0] + 0.4 * 255  # push red
-                patch[..., 1] *= 0.6
-                patch[..., 2] *= 0.6
-                img[r0:r1, c0:c1] = patch.clip(0, 255).astype(np.uint8)
-    return img
+                ax.add_patch(mpatches.Rectangle(
+                    (ci * pw - 0.5, ri * ph - 0.5), pw, ph,
+                    fill=False, edgecolor="red", linewidth=1.5))
 
 
 def main():
@@ -67,20 +62,26 @@ def main():
     idx = list(range(n)) if args.evals == "all" else [int(x) for x in args.evals.split(",")]
     os.makedirs(args.out, exist_ok=True)
 
-    fig, axes = plt.subplots(len(idx), 1, figsize=(3.2, 3.2 * len(idx)))
-    axes = np.atleast_1d(axes)
-    for ax, i in zip(axes, idx):
+    # 2 columns per eval: [clean obs_g | obs_g with red patch-outlines + cyan pusher +]
+    fig, axes = plt.subplots(len(idx), 2, figsize=(6.4, 3.2 * len(idx)))
+    axes = np.atleast_2d(axes)
+    for row, i in enumerate(idx):
         img = to_img(vis[i])
-        h = img.shape[0]
+        h, w = img.shape[:2]
         real_p = sg[i, 0:2]
         keep = manipulator_energy_mask([real_p], dilation=args.dilation)
-        ov = overlay(img, keep)
-        ax.imshow(ov)
-        # marker at the pusher's sim->image position (should be under the red patches)
-        ax.plot(real_p[0] * h / 512.0, real_p[1] * h / 512.0, "c+", ms=12, mew=2)
-        ax.set_title(f"seed {args.seed*i+1}  drop={int((keep==0).sum())} patches",
-                     fontsize=9)
-        ax.set_xticks([]); ax.set_yticks([])
+        px, py = real_p[0] * w / 512.0, real_p[1] * h / 512.0
+        for col, ax in enumerate(axes[row]):
+            ax.imshow(img)
+            ax.set_xticks([]); ax.set_yticks([])
+            if col == 1:
+                outline_drops(ax, keep, h, w)                 # red boxes, image intact
+                ax.plot(px, py, "c+", ms=14, mew=2.5)         # independent pusher marker
+        axes[row][0].set_ylabel(f"seed {args.seed*i+1}\ndrop={int((keep==0).sum())} patches",
+                                fontsize=9, rotation=0, ha="right", va="center", labelpad=28)
+        if row == 0:
+            axes[row][0].set_title("obs_g (clean)", fontsize=9)
+            axes[row][1].set_title("dropped patches (red) + pusher (cyan +)", fontsize=9)
     plt.tight_layout()
     p = os.path.join(args.out, f"mask_check_dil{args.dilation}.png")
     fig.savefig(p, dpi=130, bbox_inches="tight")
