@@ -2,3 +2,7 @@ __pycache__
 *.pyc
 outputs
 plan_outputs
+
+# Local eval images / scratch under docs/ (keep .md specs — handoff, G_ARCHITECTURE — tracked)
+docs/*
+!docs/*.md
