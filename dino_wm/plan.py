@@ -139,6 +139,12 @@ class PlanWorkspace:
         # Phase-0 fake-pusher-isolation test (stock single-T, real block goal):
         self.goal_pusher_perturbation = cfg_dict.get("goal_pusher_perturbation", "real")
         self.goal_pusher_offset = float(cfg_dict.get("goal_pusher_offset", 40.0))
+        # Manipulator-masked planning energy (STEP 2): drop the pusher's patches from
+        # the visual L2. Populated in prepare_targets (pusher = state[:, 0:2] for pusht).
+        self.mask_pusher = bool(cfg_dict.get("mask_pusher", False))
+        self.mask_dilation = int(cfg_dict.get("mask_dilation", 0))
+        self.goal_pusher_xy = None   # pusher actually rendered into obs_g (goal side)
+        self.real_pusher_xy = None   # real recorded pusher (rollout-side static proxy)
 
         objective_fn = hydra.utils.call(
             cfg_dict["objective"],
@@ -197,6 +203,33 @@ class PlanWorkspace:
             self.planner.n_taken_actions = cfg_dict["goal_H"]
         else:
             self.planner.horizon = cfg_dict["goal_H"]
+
+        # Manipulator-masked energy (STEP 2): drop the pusher's patches from the visual
+        # L2. We mask the UNION of the goal-frame pusher (rendered into obs_g) and the
+        # real recorded pusher (static proxy for the predicted last-frame pusher, which
+        # the per-eval CEM mask can't track per-sample). For goal_pusher=real the two
+        # coincide. Reuses the existing CEMPlanner.patch_mask + objective vis_mask path;
+        # the CEM loop and success criterion are untouched.
+        if self.mask_pusher:
+            if self.goal_pusher_xy is None:
+                print("[mask] mask_pusher=true but no pusher xy available "
+                      "(goal_source has no pusher state); skipping mask.")
+            else:
+                from env.pusht.multicolor_common import manipulator_energy_mask
+                masks = np.stack([
+                    manipulator_energy_mask(
+                        [self.goal_pusher_xy[i], self.real_pusher_xy[i]],
+                        dilation=self.mask_dilation,
+                    )
+                    for i in range(self.n_evals)
+                ])
+                masks = torch.tensor(masks, device=self.device)
+                target = (self.planner.sub_planner
+                          if isinstance(self.planner, MPCPlanner) else self.planner)
+                target.patch_mask = masks
+                print(f"[mask] mask_pusher on (dilation={self.mask_dilation}): dropped "
+                      f"{int((masks[0] == 0).sum())}/{masks.shape[1]} patches/eval "
+                      f"(goal+real pusher union)")
 
         self.dump_targets()
 
@@ -261,6 +294,12 @@ class PlanWorkspace:
             }
             self.state_0 = init_state  # (b, d)
             self.state_g = rollout_states[:, -1]  # (b, d)
+            # pusher = state[:, 0:2] for pusht. real_pusher_xy is ALWAYS the real
+            # recorded goal-time pusher (rollout-side proxy for the masked energy);
+            # goal_pusher_xy is whatever pusher is rendered into obs_g (updated below
+            # when the goal frame is re-rendered with a perturbed pusher).
+            self.real_pusher_xy = np.asarray(self.state_g, dtype=np.float64)[:, 0:2].copy()
+            self.goal_pusher_xy = self.real_pusher_xy.copy()
             # Phase-0 fake-pusher isolation: re-render ONLY the goal frame with the
             # pusher moved (the block goal stays the real reachable endpoint).
             # Success is block-only (env pose_only_success), so we never require the
@@ -293,6 +332,8 @@ class PlanWorkspace:
                     raise ValueError(f"unknown goal_pusher_perturbation={mode}")
                 obs_g_p, _ = self.env.prepare(self.eval_seed, rsg)
                 self.obs_g = {k: np.expand_dims(v, axis=1) for k, v in obs_g_p.items()}
+                # the pusher rendered into obs_g is now the fabricated one
+                self.goal_pusher_xy = rsg[:, 0:2].copy()
             self.gt_actions = wm_actions
 
     def sample_traj_segment_from_dset(self, traj_len):

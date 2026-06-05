@@ -59,6 +59,14 @@ env_with_distractors: false      # TEST 1: render colored T-outline distractors 
 env_n_distractors: 0             # number of distractor decals (sweep 1..3)
 distractor_outline_thickness: 7  # 512-space px (~3px at render_size=224)
 goal_pusher_perturbation: real   # TEST 2: real | behind | contact | offmap | random (goal-frame pusher)
+                                 #         (== "goal_pusher_source" in the masked-energy matrix)
 goal_pusher_offset: 40.0         # px behind block@goal for 'behind' ('contact' ignores; uses T support dist)
 pose_only_success: false         # TEST 2: block-only success (ignore the manipulator)
+
+# --- Manipulator-masked planning energy (STEP 2; see docs/MASKED_ENERGY_NOTE.md) ---
+# Drop the pusher's patches from the visual L2 (g-style object-only energy). Pair with
+# objective.alpha=0 to also drop the proprio (pusher) term. Masks the UNION of the
+# goal-frame pusher and the real recorded pusher; success criterion is untouched.
+mask_pusher: false               # true -> set CEMPlanner.patch_mask (pusher patches dropped)
+mask_dilation: 0                 # extra rings of neighbour patches to drop (0 = pusher only)
 

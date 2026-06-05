@@ -178,3 +178,45 @@ def contact_pusher_pose(block_start_xy, block_goal_pose, pusher_r=15.0, gap=2.0,
     verts = np.concatenate(tee_world_vertices(goal, scale), axis=0)  # (8, 2) world
     h = float(np.max((verts - goal[:2]) @ u))  # T support distance from origin along u
     return goal[:2] + (h + pusher_r + gap) * u
+
+
+def _dilate_drop(drop2d):
+    """Grow the True (dropped) region by one 4-neighbour ring on a (grid, grid) bool."""
+    out = drop2d.copy()
+    out[:-1, :] |= drop2d[1:, :]
+    out[1:, :] |= drop2d[:-1, :]
+    out[:, :-1] |= drop2d[:, 1:]
+    out[:, 1:] |= drop2d[:, :-1]
+    return out
+
+
+def manipulator_energy_mask(pusher_xys, dilation=0, grid=14, **kw):
+    """(P,) manipulator-masked-energy mask: 0 at the UNION of pusher patches, 1 else.
+
+    Drops the patches the planner can't know the goal-time pose of, from BOTH sides
+    of the per-patch L2 (masking a patch removes its contribution regardless of which
+    latent has the pusher there). Pass every known pusher xy (sim/512 coords) that
+    could occupy a patch in either the goal latent or the predicted last-frame latent
+    -- typically [goal_frame_pusher_xy, real_recorded_pusher_xy]. For goal_pusher=real
+    these coincide; for a fabricated goal they differ and the union covers both sides.
+
+    Args:
+        pusher_xys: iterable of (2,) sim-coord pusher positions to drop.
+        dilation: rings of 4-neighbour patches to also drop (0 = pusher patches only).
+        grid: patch-grid side (14 -> 196 patches).
+        **kw: forwarded to pusher_patch_mask (radius_sim, pad, sim, ...).
+    Returns:
+        (grid*grid,) float32 mask, 1=keep / 0=drop, row-major (ri*grid + ci).
+    """
+    keep = np.ones(grid * grid, dtype=np.float32)
+    for xy in pusher_xys:
+        if xy is None:
+            continue
+        keep *= pusher_patch_mask(np.asarray(xy, dtype=np.float64), patch=14,
+                                  img=grid * 14, **kw)
+    if dilation > 0:
+        drop = (keep == 0.0).reshape(grid, grid)
+        for _ in range(int(dilation)):
+            drop = _dilate_drop(drop)
+        keep = (~drop).astype(np.float32).reshape(-1)
+    return keep
