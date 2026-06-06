@@ -536,6 +536,17 @@ def planning_main(cfg_dict):
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
+    # Opt-in (default OFF, result-CHANGING -> needs re-validation): run the dynamics
+    # model in eval() during planning. By default the model is left in train() mode, so
+    # the predictor's dropout (p=0.1) is ACTIVE and the validated SR was measured with
+    # it. eval() disables that dropout -> deterministic rollouts (and unblocks batching
+    # evals together) but CHANGES the absolute SR, so it is gated behind this flag.
+    # See docs/PLANNING_SPEED_PROFILE.md ("Recommended follow-up").
+    if cfg_dict.get("plan_eval_mode", False):
+        model.eval()
+        print("[plan] plan_eval_mode=True -> model.eval(): predictor dropout OFF "
+              "(deterministic, but CHANGES SR vs the train-mode baseline)")
+
     # Phase-0 isolation tests: inject decal / block-only-success kwargs for STOCK
     # pusht only. Env kwargs normally come from the model's saved hydra.yaml (NOT
     # the plan cfg), so we add these from the plan cfg here; guarded on env.name so

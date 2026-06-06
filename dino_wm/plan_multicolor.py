@@ -164,6 +164,12 @@ def planning_main_mc(cfg_dict):
 
     model_ckpt = Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
     model = load_model(model_ckpt, model_cfg, model_cfg.num_action_repeat, device=device)
+    # Opt-in (default OFF, result-CHANGING): disable train-mode predictor dropout at
+    # plan time. See docs/PLANNING_SPEED_PROFILE.md ("Recommended follow-up").
+    if cfg_dict.get("plan_eval_mode", False):
+        model.eval()
+        print("[plan] plan_eval_mode=True -> model.eval(): predictor dropout OFF "
+              "(deterministic, but CHANGES SR vs the train-mode baseline)")
 
     env_kwargs = dict(with_velocity=True, with_target=True, n_targets=mc["n_targets"],
                       outline_thickness=mc["outline_thickness"],

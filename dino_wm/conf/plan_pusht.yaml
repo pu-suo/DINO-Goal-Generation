@@ -70,3 +70,11 @@ pose_only_success: false         # TEST 2: block-only success (ignore the manipu
 mask_pusher: false               # true -> set CEMPlanner.patch_mask (pusher patches dropped)
 mask_dilation: 0                 # extra rings of neighbour patches to drop (0 = pusher only)
 
+# --- Planning speed (see docs/PLANNING_SPEED_PROFILE.md) ----------------------
+# fast_encode (default true, RESULT-PRESERVING): cache the start-obs DINOv2 encode
+# instead of re-encoding it per CEM candidate. Override for the A/B regression with
+#   +planner.sub_planner.fast_encode=false
+# plan_eval_mode (default false, RESULT-CHANGING -> needs re-validation): run the
+# dynamics model in eval() at plan time, disabling the predictor's train-mode dropout.
+plan_eval_mode: false
+

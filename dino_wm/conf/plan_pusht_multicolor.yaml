@@ -20,6 +20,10 @@ debug_dset_init: False
 # on the MULTICOLOR model (real|behind|offmap|random). No effect on named_target.
 goal_pusher_perturbation: real
 goal_pusher_offset: 40.0
+# Planning speed (docs/PLANNING_SPEED_PROFILE.md): fast_encode is default-on via the
+# planner config; plan_eval_mode (default false) is the RESULT-CHANGING eval()-at-plan
+# opt-in. Override fast_encode with +planner.sub_planner.fast_encode=false for A/B.
+plan_eval_mode: false
 
 objective:
   _target_: planning.objectives.create_objective_fn
