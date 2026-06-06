@@ -132,18 +132,24 @@ class PlanEvaluator:  # evaluator for planning
             i_z_obs=i_final_z_obs,
         )
 
-        # plot trajs
+        # plot trajs. Decode ONLY the n_plot_samples trajectories we actually render
+        # -- decoding all n_evals through the VQ-VAE is wasteful and OOMs the GPU at
+        # large n_evals (e.g. n=30 tried to alloc 2.8 GiB in a single decoder conv);
+        # _plot_rollout_compare already slices to n_plot_samples, so this is purely a
+        # memory fix and does not change what is plotted or the returned metrics/SR.
         if plot and self.wm.decoder is not None:
-            i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
+            n_plot = min(self.n_plot_samples, i_z_obses["visual"].shape[0])
+            i_z_plot = {k: v[:n_plot] for k, v in i_z_obses.items()}
+            i_visuals = self.wm.decode_obs(i_z_plot)[0]["visual"]
             i_visuals = self._mask_traj(
-                i_visuals, action_len + 1
+                i_visuals, (action_len + 1)[:n_plot]
             )  # we have action_len + 1 states
-            e_visuals = self.preprocessor.transform_obs_visual(e_visuals)
-            e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
+            e_vis = self.preprocessor.transform_obs_visual(e_visuals[:n_plot])
+            e_vis = self._mask_traj(e_vis, (action_len * self.frameskip + 1)[:n_plot])
             self._plot_rollout_compare(
-                e_visuals=e_visuals,
+                e_visuals=e_vis,
                 i_visuals=i_visuals,
-                successes=successes,
+                successes=successes[:n_plot],
                 save_video=save_video,
                 filename=filename,
             )
