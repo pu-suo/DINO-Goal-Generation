@@ -150,6 +150,36 @@ class PlanWorkspace:
             cfg_dict["objective"],
         )
 
+        # Quasimetric cost-to-go shaping (see docs/QUASIMETRIC_RUNBOOK.md). When
+        # enabled, the energy becomes  w_l2 * masked-L2 + w_qm * d_theta(+alpha*proprio):
+        # the trained pure-V* head adds a dense, asymmetric, long-range basin on top
+        # of the stock masked-L2 floor. CEM search / mask plumbing / success are
+        # untouched -- only the scalar energy gains a term.
+        qm_cfg = cfg_dict.get("qm", {}) or {}
+        self.qm_enabled = bool(qm_cfg.get("enabled", False))
+        if self.qm_enabled:
+            from models.quasimetric import load_quasimetric_head
+            from planning.objectives import create_qm_objective_fn
+            ckpt_path = qm_cfg["ckpt"]
+            assert ckpt_path, "qm.enabled=true requires qm.ckpt=<path to qm_head.pth>"
+            qm_head, qm_ckpt = load_quasimetric_head(ckpt_path, device=self.device)
+            obj = cfg_dict["objective"]
+            objective_fn = create_qm_objective_fn(
+                alpha=obj["alpha"], base=obj["base"], mode=obj["mode"],
+                qm_head=qm_head,
+                w_qm=float(qm_cfg.get("w_qm", 1.0)),
+                w_l2=float(qm_cfg.get("w_l2", 1.0)),
+                per_step=bool(qm_cfg.get("per_step", False)),
+            )
+            trained_dil = int(qm_ckpt.get("mask_dilation", 0))
+            if trained_dil != int(cfg_dict.get("mask_dilation", 0)):
+                print(f"[qm][warn] head trained with mask_dilation={trained_dil} but "
+                      f"plan mask_dilation={cfg_dict.get('mask_dilation', 0)} -- "
+                      f"train/plan mask mismatch.")
+            print(f"[qm] enabled: head={ckpt_path} (step {qm_ckpt.get('step')}, "
+                  f"{qm_ckpt['head_cfg'].get('head_type')}), w_qm={qm_cfg.get('w_qm',1.0)} "
+                  f"w_l2={qm_cfg.get('w_l2',1.0)} per_step={qm_cfg.get('per_step',False)}")
+
         self.data_preprocessor = Preprocessor(
             action_mean=self.dset.action_mean,
             action_std=self.dset.action_std,

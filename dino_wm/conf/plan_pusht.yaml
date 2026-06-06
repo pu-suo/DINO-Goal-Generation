@@ -70,6 +70,19 @@ pose_only_success: false         # TEST 2: block-only success (ignore the manipu
 mask_pusher: false               # true -> set CEMPlanner.patch_mask (pusher patches dropped)
 mask_dilation: 0                 # extra rings of neighbour patches to drop (0 = pusher only)
 
+# --- Quasimetric cost-to-go shaping (see docs/QUASIMETRIC_RUNBOOK.md) ---------
+# When enabled, the planning energy becomes
+#     w_l2 * masked-L2  +  w_qm * d_theta(mask(z_T), mask(z_goal))  (+ alpha*proprio)
+# d_theta is a trained pure-V* IQE quasimetric (no transition/Q/policy). Pair with
+# mask_pusher=true objective.alpha=0 (the masked floor) to test whether the learned
+# asymmetric cost-to-go closes the floor->ceiling gap. CEM/mask/success untouched.
+qm:
+  enabled: false                 # true -> add the w_qm * d_theta term
+  ckpt: null                     # path to qm_head.pth (scripts/train_quasimetric.py)
+  w_qm: 1.0                      # weight on the quasimetric term (tune ratio on the box)
+  w_l2: 1.0                      # weight on the terminal masked-L2 precision term
+  per_step: false                # true -> average d_theta over all rollout frames (dense)
+
 # --- Planning speed (see docs/PLANNING_SPEED_PROFILE.md) ----------------------
 # fast_encode (default true, RESULT-PRESERVING): cache the start-obs DINOv2 encode
 # instead of re-encoding it per CEM candidate. Override for the A/B regression with
