@@ -88,12 +88,23 @@ class VWorldModel(nn.Module):
         if self.decoder is not None:
             self.decoder.eval()
 
-    def encode(self, obs, act): 
+    def encode(self, obs, act):
         """
-        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size) 
+        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size)
         output:    z (tensor): (b, num_frames, num_patches, emb_dim)
         """
         z_dct = self.encode_obs(obs)
+        return self._assemble_z(z_dct, act)
+
+    def _assemble_z(self, z_dct, act):
+        """Concatenate an ENCODED obs (z_dct, the output of encode_obs) with the
+        action embedding into the predictor's input token layout.
+
+        This is the second half of encode(); factored out verbatim so the planning
+        speed-path (rollout_from_zobs) can reuse a CACHED z_dct and skip re-running
+        the frozen DINOv2 encoder. The arithmetic here is byte-for-byte identical to
+        the original encode() body.
+        """
         act_emb = self.encode_act(act)
         if self.concat_dim == 0:
             z = torch.cat(
@@ -108,7 +119,7 @@ class VWorldModel(nn.Module):
                 [z_dct['visual'], proprio_repeated, act_repeated], dim=3
             )  # (b, num_frames, num_patches, dim + action_dim)
         return z
-    
+
     def encode_act(self, act):
         act = self.action_encoder(act) # (b, num_frames, action_emb_dim)
         return act
@@ -293,6 +304,44 @@ class VWorldModel(nn.Module):
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:] 
         z = self.encode(obs_0, act_0)
+        t = 0
+        inc = 1
+        while t < action.shape[1]:
+            z_pred = self.predict(z[:, -self.num_hist :])
+            z_new = z_pred[:, -inc:, ...]
+            z_new = self.replace_actions_from_z(z_new, action[:, t : t + inc, :])
+            z = torch.cat([z, z_new], dim=1)
+            t += inc
+
+        z_pred = self.predict(z[:, -self.num_hist :])
+        z_new = z_pred[:, -1 :, ...] # take only the next pred
+        z = torch.cat([z, z_new], dim=1)
+        z_obses, z_acts = self.separate_emb(z)
+        return z_obses, z
+
+    def rollout_from_zobs(self, z_obs_0, act):
+        """Planning speed-path: identical to rollout(obs_0, act) when
+        ``z_obs_0 == encode_obs(obs_0)``, but takes the ALREADY-encoded start obs
+        and skips the per-call DINOv2 encode of obs_0.
+
+        Why this preserves results exactly (see docs/PLANNING_SPEED_PROFILE.md):
+        the DINOv2 encoder and the proprio encoder are frozen and contain NO active
+        stochastic layers (dropout p=0 / drop_path=0), so encode_obs() draws NOTHING
+        from the RNG stream. During planning the dynamics model is left in train()
+        mode, so the predictor's dropout (p=0.1) IS active and IS the only RNG
+        consumer in the rollout. This method runs the SAME number of predict() calls
+        in the SAME order as rollout(), so the dropout RNG stream -- hence every
+        predicted latent -- is exactly what rollout() would produce. We only hoist
+        the deterministic, RNG-free encode out of the per-candidate inner loop.
+
+        input:  z_obs_0 (dict): {'visual': (b, n, P, D), 'proprio': (b, n, prop_dim)}
+                  act: (b, t+n, action_dim)
+        output: same structure as rollout(): (z_obses dict, z tensor)
+        """
+        num_obs_init = z_obs_0['visual'].shape[1]
+        act_0 = act[:, :num_obs_init]
+        action = act[:, num_obs_init:]
+        z = self._assemble_z(z_obs_0, act_0)
         t = 0
         inc = 1
         while t < action.shape[1]:

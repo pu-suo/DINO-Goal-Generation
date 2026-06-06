@@ -84,10 +84,15 @@ class PlanEvaluator:  # evaluator for planning
         return result
 
     def eval_actions(
-        self, actions, action_len=None, filename="output", save_video=False
+        self, actions, action_len=None, filename="output", save_video=False, plot=True
     ):
         """
         actions: detached torch tensors on cuda
+        plot: if False, skip the (purely cosmetic) decode + rollout-compare image.
+              The returned metrics/successes are unchanged; this only suppresses the
+              VQ-VAE decode and PNG/MP4 dump. Used by the inner CEM eval loop to avoid
+              decoding every opt-step. The decoder is RNG-free, so skipping it does not
+              perturb the predictor's dropout RNG stream.
         Returns
             metrics, and feedback from env
         """
@@ -128,7 +133,7 @@ class PlanEvaluator:  # evaluator for planning
         )
 
         # plot trajs
-        if self.wm.decoder is not None:
+        if plot and self.wm.decoder is not None:
             i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
             i_visuals = self._mask_traj(
                 i_visuals, action_len + 1
