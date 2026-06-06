@@ -16,14 +16,14 @@
 #
 # Usage:
 #   QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth bash analysis/run_qm_eval.sh all
-#   QM_CKPT=... N_EVALS=50 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh floor new ceiling
+#   QM_CKPT=... N_EVALS=30 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh floor new ceiling
 #   QM_CKPT=... bash analysis/run_qm_eval.sh sweep          # w_qm:w_l2 knee sweep (NEW only)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
 CKPTS="${CKPTS:-./checkpoints}"
 QM_CKPT="${QM_CKPT:-}"
-N_EVALS="${N_EVALS:-50}"
+N_EVALS="${N_EVALS:-30}"   # 30 = project's ">=30 for a headline" floor; paired across conditions
 SEED="${SEED:-99}"
 W_QM="${W_QM:-1.0}"
 W_L2="${W_L2:-10.0}"

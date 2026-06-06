@@ -83,9 +83,11 @@ python analysis/validate_quasimetric.py --qm_ckpt $CKPTS/qm/iqe_d0/qm_head.pth \
 #    (c) scale: adjacent d ~ 1.   Do NOT proceed if (a) or (b) fail.
 
 # 4) (optional but cheap) tune w_qm:w_l2, then the decision run
-QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth bash analysis/run_qm_eval.sh sweep
-QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth N_EVALS=50 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh all
-#    prints FLOOR / NEW / CEILING SR on the SAME genuine held-out goals.
+QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth N_EVALS=10 bash analysis/run_qm_eval.sh sweep
+QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth N_EVALS=30 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh all
+#    prints FLOOR / NEW / CEILING SR on the SAME genuine held-out goals. n_evals default
+#    is 30 (paired across the 3 conditions; project's ">=30 for a headline"); use 10 for
+#    the sweep (a cheap directional tuning scan) and 50 only for paper-grade error bars.
 ```
 
 ### Optional: the asymmetric-vs-symmetric ablation (the paper's core comparison)
