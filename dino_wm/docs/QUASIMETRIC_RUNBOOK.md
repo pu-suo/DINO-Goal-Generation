@@ -67,8 +67,12 @@ length; set `--phi_offset` near p90/max (start ~30, adjust from the print).
 cd dino_wm && source $WS/activate.sh          # DATASET_DIR, CKPTS, env
 # 0) data + stock ckpt already present (scripts/download_data.sh)
 
-# 1) cache model-step latents for train+val (one-time; prints model-step length hist)
-python scripts/cache_qm_latents.py --splits train val
+# 1) cache model-step latents (one-time; prints model-step length hist + projected GB).
+#    NOTE: full pusht_noise train is ~18.7k trajs = ~71 GB f16 -> subsample with --n_rollout
+#    (a few thousand trajs is ample for the small head). The script aborts if a split's
+#    projected size exceeds --max_gb (default 35). train cache big, val cache tiny:
+python scripts/cache_qm_latents.py --splits train --n_rollout 3000   # ~11 GB
+python scripts/cache_qm_latents.py --splits val   --n_rollout 300    # ~1 GB
 #    -> $DATASET_DIR/pusht_noise/qm_latents/{train,val}/  (note the p90/max it prints)
 
 # 2) train the IQE head (set --phi_offset near the printed p90/max)

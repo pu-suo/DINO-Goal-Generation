@@ -75,7 +75,10 @@ def main():
     ap.add_argument("--device", default="auto")
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--n_rollout", type=int, default=None,
-                    help="cap #trajectories per split (None = all). Bounds cache size.")
+                    help="cap #trajectories per split (None = all). Bounds cache size + RAM. "
+                         "full pusht_noise train (~18.7k trajs) is ~71 GB f16 -- use e.g. 3000.")
+    ap.add_argument("--max_gb", type=float, default=35.0,
+                    help="abort a split if its projected f16 cache exceeds this (disk/RAM guard).")
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -96,6 +99,22 @@ def main():
         dset = PushTDataset(data_path=str(split_path), transform=default_transform(args.img_size),
                             n_rollout=args.n_rollout, normalize_action=True, with_velocity=True)
         n_traj = len(dset)
+
+        # Pre-flight DISK GUARD (cheap: from seq lengths, no encoding). The full
+        # pusht_noise train split is ~71 GB of f16 latents -- caching it blindly fills
+        # a 50 GB disk and dies on torch.save. Project the size and abort early with a
+        # suggested --n_rollout instead of encoding for hours then failing.
+        proj_steps = sum(len(range(0, int(dset.get_seq_length(i)), args.frameskip))
+                         for i in range(n_traj))
+        proj_gb = proj_steps * 196 * encoder.emb_dim * 2 / 1e9
+        print(f"[{split}] projected: {n_traj} trajs, ~{proj_steps} model-steps, ~{proj_gb:.1f} GB f16 "
+              f"(also held in RAM before save)")
+        if proj_gb > args.max_gb:
+            sugg = max(1, int(n_traj * (args.max_gb / proj_gb) * 0.95))
+            raise SystemExit(
+                f"[{split}] projected ~{proj_gb:.1f} GB > --max_gb={args.max_gb}. Re-run with "
+                f"--n_rollout {sugg} (subsamples trajectories) or raise --max_gb if you have disk+RAM.")
+
         lat_chunks, state_chunks, starts, lengths = [], [], [], []
         cursor = 0
         for i in range(n_traj):
