@@ -9,6 +9,60 @@
 > (see [[dino-wm-dev-setup]] / `scripts/setup_vastai.sh`). Nothing here fabricates
 > SR numbers — the GPU commands and what each gate must show are below.
 
+## Relaunch (recommended): one command, hands-off
+On a **fresh** instance (or after a Stop/Start), the whole pipeline — env → data →
+cache → calibrated train → validate → 3-way eval — runs from a single idempotent
+driver that saves **every** log under one dir (the box can't scroll up):
+
+```bash
+cd /workspace
+git clone https://github.com/pu-suo/DINO-Goal-Generation.git dino_goal \
+    || (cd dino_goal && git pull)          # get the CURRENT code first
+cd dino_goal/dino_wm
+tmux new-session -d -s qm && tmux switch-client -t qm   # if already inside tmux
+bash scripts/relaunch_qm.sh                # ~22 GB cache; logs -> /workspace/qm_runs/<tag>_<stamp>/
+```
+Re-running resumes (each stage skips if its output exists). Tunables are env vars
+(`N_TRAIN=8000 bash scripts/relaunch_qm.sh`, also `FORCE_TRAIN=1`, `N_EVALS`, …); see
+the header of `scripts/relaunch_qm.sh`. The tail of `relaunch.log` is the decision data
+(gate verdicts + FLOOR/NEW/CEILING SR). The manual stage-by-stage commands below still
+work and are what the driver calls.
+
+## Why iqe_d0 failed, and the iqe_d1 recalibration (baked into the driver)
+`iqe_d0` (60k steps, 3000 trajs, `phi_offset=30 beta=0.1`, no goal cap) **failed its
+gates by silent overfitting** and its NEW eval came in *below* the 0.80 floor:
+- **(c) scale FAIL:** held-out adjacent-d ≈ **9** (target ~1) while train `d_trans`
+  converged to **0.6** → ~15× train/val gap = the conv encoder memorised train trajs.
+- **(a) monotonicity weak (0.54).** **(b) asymmetry PASS (0.76).**
+- **`d_sg` inflated to ~108** for goals ≤50 steps: `beta=0.1` is too soft to saturate
+  `phi` near the offset, so the spreading objective kept pushing distances up.
+
+The recalibrated `iqe_d1` (the driver's defaults) targets both failure modes:
+
+| lever | iqe_d0 | iqe_d1 | why |
+|---|---|---|---|
+| `phi_beta` | 0.1 | **0.5** | sharper saturation → stops `d_sg` inflation |
+| `max_goal_offset` | none | **32** | bound goal distance so `d_sg` has a finite target |
+| `phi_offset` | 30 | **25** | just under the goal cap (target cost-to-go scale) |
+| train trajs | 3000 | **6000** | more data ↓ overfitting (RAM-safe after the cache fix) |
+| steps | 60000 | **20000** | ~26 epochs not ~210 |
+| `p_random_goal` | 0 | **0.3** | cross-traj goals (QRL spreading / generalization) |
+| `weight_decay` | 0 | **1e-4** | small AdamW WD, anti-overfit belt |
+
+Two code hardenings make this observable and feasible (both backward-compatible):
+1. **`cache_qm_latents.py` pre-allocates** the latent tensor instead of `list`+`torch.cat`
+   (which held ~2× in RAM and OOM'd past a few thousand trajs) — this is what lets us
+   *use* more data.
+2. **`train_quasimetric.py` runs a LIVE val monitor** (`--val_every`, default 1000):
+   prints the train/val `d_trans` gap every N steps and saves **`qm_head_bestval.pth`**
+   at the lowest val local-cost violation. iqe_d0 overfit *blind* for 5 h; now the gap is
+   visible in real time and validate/plan use the best-generalizing checkpoint.
+
+**If `iqe_d1` still fails gate (a)/(c)** after this: the next lever is the known
+**moving goal-side mask** confound — for a fixed goal, the per-pair *union* mask changes
+which goal patches are zeroed at each step `t` (benign for L2, not for the conv embedding).
+That's a deeper train/plan-consistency change; try more data + the bestval head first.
+
 ## What this is (and is NOT)
 - A **pure V\* quasimetric distance head** `d_theta(z_a, z_b)` over the frozen
   DINO-WM latent grid (masked to object-only patches). After QRL training,
@@ -71,24 +125,27 @@ cd dino_wm && source $WS/activate.sh          # DATASET_DIR, CKPTS, env
 #    NOTE: full pusht_noise train is ~18.7k trajs = ~71 GB f16 -> subsample with --n_rollout
 #    (a few thousand trajs is ample for the small head). The script aborts if a split's
 #    projected size exceeds --max_gb (default 35). train cache big, val cache tiny:
-python scripts/cache_qm_latents.py --splits train --n_rollout 3000   # ~11 GB
-python scripts/cache_qm_latents.py --splits val   --n_rollout 300    # ~1 GB
+python scripts/cache_qm_latents.py --splits train --n_rollout 6000   # ~22 GB (pre-allocated)
+python scripts/cache_qm_latents.py --splits val   --n_rollout 400    # ~1.5 GB
 #    -> $DATASET_DIR/pusht_noise/qm_latents/{train,val}/  (note the p90/max it prints)
 
-# 2) train the IQE head (set --phi_offset near the printed p90/max)
-python scripts/train_quasimetric.py --out $CKPTS/qm/iqe_d0 --steps 60000 --phi_offset 30
-#    watch: lambda BOUNDED, d_trans -> ~1, viol -> <= eps^2=0.0625. If lambda diverges
-#    or d collapses: --lambda_lr 0.003 (and re-check). curves -> $CKPTS/qm/iqe_d0/train_curves.png
+# 2) train the IQE head -- calibrated iqe_d1 (see the recalibration table above).
+#    The LIVE [val] lines show the train/val d_trans gap; bestval head is kept separately.
+python scripts/train_quasimetric.py --out $CKPTS/qm/iqe_d1 --steps 20000 \
+    --phi_offset 25 --phi_beta 0.5 --max_goal_offset 32 --p_random_goal 0.3 \
+    --weight_decay 1e-4 --num_workers 4
+#    watch: lambda BOUNDED, d_trans -> ~1, val/train ~1x. If lambda diverges or d
+#    collapses: --lambda_lr 0.003. curves -> $CKPTS/qm/iqe_d1/train_curves.png
 
-# 3) VALIDATION GATES on held-out val (PASS (a)+(b) before CEM)
-python analysis/validate_quasimetric.py --qm_ckpt $CKPTS/qm/iqe_d0/qm_head.pth \
-    --cache_dir $DATASET_DIR/pusht_noise/qm_latents --split val --out qm_outputs/validate_iqe_d0
+# 3) VALIDATION GATES on held-out val (PASS (a)+(c) before CEM) -- on the BEST-VAL head
+python analysis/validate_quasimetric.py --qm_ckpt $CKPTS/qm/iqe_d1/qm_head_bestval.pth \
+    --cache_dir $DATASET_DIR/pusht_noise/qm_latents --split val --out qm_outputs/validate_iqe_d1
 #    (a) monotonicity: decreasing-frac mean > 0.7   (b) asymmetry: rel_gap > 0.05
-#    (c) scale: adjacent d ~ 1.   Do NOT proceed if (a) or (b) fail.
+#    (c) scale: adjacent d ~ 1.   Do NOT proceed if (a) or (c) fail.
 
 # 4) (optional but cheap) tune w_qm:w_l2, then the decision run
-QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth N_EVALS=10 bash analysis/run_qm_eval.sh sweep
-QM_CKPT=$CKPTS/qm/iqe_d0/qm_head.pth N_EVALS=30 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh all
+QM_CKPT=$CKPTS/qm/iqe_d1/qm_head_bestval.pth N_EVALS=10 bash analysis/run_qm_eval.sh sweep
+QM_CKPT=$CKPTS/qm/iqe_d1/qm_head_bestval.pth N_EVALS=30 W_QM=1.0 W_L2=10.0 bash analysis/run_qm_eval.sh all
 #    prints FLOOR / NEW / CEILING SR on the SAME genuine held-out goals. n_evals default
 #    is 30 (paired across the 3 conditions; project's ">=30 for a headline"); use 10 for
 #    the sweep (a cheap directional tuning scan) and 50 only for paper-grade error bars.
