@@ -100,22 +100,32 @@ def main():
                             n_rollout=args.n_rollout, normalize_action=True, with_velocity=True)
         n_traj = len(dset)
 
-        # Pre-flight DISK GUARD (cheap: from seq lengths, no encoding). The full
-        # pusht_noise train split is ~71 GB of f16 latents -- caching it blindly fills
-        # a 50 GB disk and dies on torch.save. Project the size and abort early with a
-        # suggested --n_rollout instead of encoding for hours then failing.
-        proj_steps = sum(len(range(0, int(dset.get_seq_length(i)), args.frameskip))
-                         for i in range(n_traj))
+        # Pre-flight DISK/RAM GUARD (cheap: from seq lengths, no encoding). The full
+        # pusht_noise train split is ~71 GB of f16 latents. We (1) project the size and
+        # abort early with a suggested --n_rollout if it exceeds --max_gb, and (2)
+        # PRE-ALLOCATE the latent tensor at its exact final size and fill it row-by-row.
+        # The old code appended chunks then torch.cat'd, which transiently held ~2x the
+        # cache in RAM (the chunk list AND the concatenated copy) and OOM'd the box when
+        # scaling past a few thousand trajs -- the very thing we need to do to fight the
+        # iqe_d0 overfitting. Pre-allocation keeps peak RAM at ~1x. (states are tiny --
+        # ~7 floats/step -- so they still use a cheap list+cat.)
+        per_traj = [len(range(0, int(dset.get_seq_length(i)), args.frameskip))
+                    for i in range(n_traj)]
+        proj_steps = sum(s for s in per_traj if s >= 2)   # exact KEPT model-steps (skip <2)
         proj_gb = proj_steps * 196 * encoder.emb_dim * 2 / 1e9
         print(f"[{split}] projected: {n_traj} trajs, ~{proj_steps} model-steps, ~{proj_gb:.1f} GB f16 "
-              f"(also held in RAM before save)")
+              f"(pre-allocated; peak RAM ~1x this)")
         if proj_gb > args.max_gb:
-            sugg = max(1, int(n_traj * (args.max_gb / proj_gb) * 0.95))
+            sugg = max(1, int(n_traj * (args.max_gb / proj_gb) * 0.95)) if proj_gb > 0 else n_traj
             raise SystemExit(
                 f"[{split}] projected ~{proj_gb:.1f} GB > --max_gb={args.max_gb}. Re-run with "
                 f"--n_rollout {sugg} (subsamples trajectories) or raise --max_gb if you have disk+RAM.")
+        if proj_steps == 0:
+            print(f"skip {split} (no trajectory has >= 2 model-steps)")
+            continue
 
-        lat_chunks, state_chunks, starts, lengths = [], [], [], []
+        latents = torch.empty((proj_steps, 196, encoder.emb_dim), dtype=torch.float16)
+        state_chunks, starts, lengths = [], [], []
         cursor = 0
         for i in range(n_traj):
             T = int(dset.get_seq_length(i))
@@ -126,7 +136,7 @@ def main():
                 continue
             obs, _, state, _ = dset.get_frames(i, idxs)
             z = encode_frames(obs["visual"], encoder, enc_resize, device, args.batch)  # (L,196,384) f16
-            lat_chunks.append(z)
+            latents[cursor:cursor + len(idxs)] = z        # fill pre-allocated block (no 2x copy)
             state_chunks.append(state.float())                                          # (L,state_dim)
             starts.append(cursor)
             lengths.append(len(idxs))
@@ -134,7 +144,7 @@ def main():
             if (i + 1) % 50 == 0 or i == n_traj - 1:
                 print(f"  [{split}] {i+1}/{n_traj} trajs, {cursor} model-steps cached")
 
-        latents = torch.cat(lat_chunks, dim=0)            # (Ntot,196,384) f16
+        assert cursor == proj_steps, f"filled {cursor} != projected {proj_steps}"
         states = torch.cat(state_chunks, dim=0)           # (Ntot,state_dim) f32
         starts = torch.tensor(starts, dtype=torch.long)
         lengths = torch.tensor(lengths, dtype=torch.long)

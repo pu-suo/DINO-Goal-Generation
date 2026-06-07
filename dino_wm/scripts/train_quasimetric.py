@@ -81,6 +81,9 @@ def main():
     ap.add_argument("--lambda_init", type=float, default=0.01)
     ap.add_argument("--lambda_lr", type=float, default=0.01)
     ap.add_argument("--model_lr", type=float, default=1e-4)
+    ap.add_argument("--weight_decay", type=float, default=0.0,
+                    help="AdamW weight decay on the head; a small value (e.g. 1e-4) curbs the "
+                         "overfitting that sank iqe_d0 (val adjacent-d ~9x train). 0 == plain Adam.")
     ap.add_argument("--phi_offset", type=float, default=30.0,
                     help="OFFSET in phi=-softplus(OFFSET-x,beta); set near cache p90/max model-steps.")
     ap.add_argument("--phi_beta", type=float, default=0.1)
@@ -92,6 +95,11 @@ def main():
     ap.add_argument("--max_goal_offset", type=int, default=None)
     ap.add_argument("--log_every", type=int, default=200)
     ap.add_argument("--save_every", type=int, default=10000)
+    ap.add_argument("--val_every", type=int, default=1000,
+                    help="every N steps, eval d_trans/d_sg on the VAL cache and print the "
+                         "train/val gap LIVE (iqe_d0 overfit silently -- we only caught it at the "
+                         "post-hoc gate after 5h). Also saves qm_head_bestval.pth at the lowest "
+                         "val local-cost violation. 0 disables.")
     ap.add_argument("--smoke", action="store_true", help="tiny CPU smoke run on the smoke cache")
     args = ap.parse_args()
 
@@ -113,15 +121,42 @@ def main():
         num_workers=args.num_workers, worker_init_fn=worker_init_fn if args.num_workers else None)
     it = cycle(loader)
 
+    # LIVE val monitor. iqe_d0 overfit silently (held-out adjacent-d ~9x train) and we
+    # only found out at the post-hoc validation gate, after a 5h run. Pull batches from the
+    # val cache during training so the train/val gap is visible every --val_every steps,
+    # and persist the checkpoint that GENERALIZES best (lowest val local-cost violation,
+    # i.e. val d_trans closest to 1) as qm_head_bestval.pth -- that is the one to validate
+    # and plan with. Best-effort: disabled cleanly if the val cache is absent/tiny.
+    val_it = None
+    if args.val_every > 0 and not args.smoke:
+        try:
+            val_dset = QMLatentDataset(args.cache_dir, "val", mask_dilation=args.mask_dilation,
+                                       p_random_goal=args.p_random_goal, max_goal_offset=args.max_goal_offset)
+            if len(val_dset) > 0:
+                vb = min(args.batch, len(val_dset))
+                val_loader = torch.utils.data.DataLoader(val_dset, batch_size=vb, shuffle=True,
+                                                         drop_last=False, num_workers=0)
+                val_it = cycle(val_loader)
+            else:
+                print("[val] val cache has 0 transitions; monitoring disabled")
+        except Exception as e:
+            print(f"[val] monitoring disabled (no/unreadable val cache: {e})")
+    best_val_viol = float("inf")
+
     head_cfg = dict(head_type=args.head_type, proj_out=args.proj_out,
                     dim_per_component=args.dim_per_component, f_out=args.f_out,
                     proj_hidden=args.proj_hidden, append_mask_channel=not args.no_mask_channel)
     head = build_quasimetric_head(head_cfg).to(device).train()
     n_params = sum(p.numel() for p in head.parameters())
-    print(f"head={args.head_type} params={n_params/1e6:.2f}M")
+    print(f"head={args.head_type} params={n_params/1e6:.2f}M wd={args.weight_decay}")
+
+    def save_ckpt(path, step, **extra):
+        torch.save(dict(state_dict=head.state_dict(), head_cfg=head_cfg, args=vars(args),
+                        mask_dilation=args.mask_dilation, phi_offset=args.phi_offset,
+                        phi_beta=args.phi_beta, eps=args.eps, step=step, **extra), path)
 
     lam_raw = torch.nn.Parameter(torch.tensor(float(inv_softplus(args.lambda_init)), device=device))
-    opt = torch.optim.Adam(head.parameters(), lr=args.model_lr)
+    opt = torch.optim.AdamW(head.parameters(), lr=args.model_lr, weight_decay=args.weight_decay)
     opt_lam = torch.optim.Adam([lam_raw], lr=args.lambda_lr)
     eps2 = args.eps ** 2
 
@@ -165,11 +200,26 @@ def main():
             if rec["d_trans"] < 1e-3 or rec["d_sg"] < 1e-3:
                 print("  [warn] distances collapsing toward 0 -> check phi_offset / lambda_lr")
 
+        if val_it is not None and (step % args.val_every == 0 or step == 1):
+            head.eval()
+            with torch.no_grad():
+                vbm = next(val_it)
+                vdt = head(vbm["z_a"].to(device), vbm["z_b"].to(device), vbm["keep_ab"].to(device))
+                vds = head(vbm["z_s"].to(device), vbm["z_g"].to(device), vbm["keep_sg"].to(device))
+                v_viol = float(F.relu(vdt - 1.0).pow(2).mean())
+                v_dt, v_ds = float(vdt.mean()), float(vds.mean())
+            head.train()
+            tr_dt = float(d_trans.mean())
+            ratio = v_dt / (tr_dt + 1e-9)
+            warn = "  <-- OVERFIT: val d_trans >> train" if ratio > 2.0 else ""
+            print(f"   [val] d_trans {v_dt:.3f} (train {tr_dt:.3f}, val/train {ratio:.2f}x) "
+                  f"d_sg {v_ds:.3f} viol {v_viol:.4f}{warn}")
+            if v_viol < best_val_viol:
+                best_val_viol = v_viol
+                save_ckpt(out / "qm_head_bestval.pth", step, val_viol=v_viol, val_d_trans=v_dt)
+
         if step % args.save_every == 0 or step == args.steps:
-            ckpt = dict(state_dict=head.state_dict(), head_cfg=head_cfg, args=vars(args),
-                        mask_dilation=args.mask_dilation, phi_offset=args.phi_offset,
-                        phi_beta=args.phi_beta, eps=args.eps, step=step)
-            torch.save(ckpt, out / "qm_head.pth")
+            save_ckpt(out / "qm_head.pth", step)        # latest (crash recovery)
             with open(out / "train_log.json", "w") as f:
                 json.dump(hist, f, indent=2)
 
@@ -190,7 +240,11 @@ def main():
     except Exception as e:
         print(f"(plot skipped: {e})")
 
-    print(f"Done. head -> {out/'qm_head.pth'}")
+    print(f"Done. final head -> {out/'qm_head.pth'}")
+    if (out / "qm_head_bestval.pth").exists():
+        print(f"BEST-VAL head -> {out/'qm_head_bestval.pth'} (val local-cost viol {best_val_viol:.4f}). "
+              f"Validate and PLAN with this one -- it generalizes best; the final head may have "
+              f"overfit. (If val/train d_trans stayed ~1x throughout, the two are equivalent.)")
 
 
 if __name__ == "__main__":
