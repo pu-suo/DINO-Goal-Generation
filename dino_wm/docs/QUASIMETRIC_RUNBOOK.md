@@ -53,10 +53,21 @@ Two code hardenings make this observable and feasible (both backward-compatible)
 1. **`cache_qm_latents.py` pre-allocates** the latent tensor instead of `list`+`torch.cat`
    (which held ~2× in RAM and OOM'd past a few thousand trajs) — this is what lets us
    *use* more data.
-2. **`train_quasimetric.py` runs a LIVE val monitor** (`--val_every`, default 1000):
-   prints the train/val `d_trans` gap every N steps and saves **`qm_head_bestval.pth`**
-   at the lowest val local-cost violation. iqe_d0 overfit *blind* for 5 h; now the gap is
-   visible in real time and validate/plan use the best-generalizing checkpoint.
+2. **`train_quasimetric.py` runs a LIVE val monitor** (`--val_every`, default 1000) that
+   reports **absolute, gate-aligned** held-out health and saves **`qm_head_bestval.pth`**
+   at the **best held-out MONOTONICITY** (a cheap gate-(a) proxy over `--val_mono_k` trajs),
+   among scale-sane + spread checkpoints. *Do not trust level metrics:* a val/train `d_trans`
+   ratio is misleading (it inflates when **train** `d_trans` collapses — the one-sided
+   `relu(d−1)²` constraint permits adjacent `d<1` for free — even while val is fine), and
+   `d_trans`/`d_sg` are **blind to ordering** (the live `d_sg` is phi-*saturated* above the
+   offset and uses 30% random cross-traj anchors). Monotonicity is the only live signal that
+   tracks what CEM actually consumes. iqe_d0 is the proof: it passed asymmetry (0.76) yet
+   failed monotonicity (0.54).
+
+**Don't wait for training to finish to learn the verdict.** Gate (a) is computable **offline
+in seconds** on the latest saved checkpoint while training continues — run
+`analysis/validate_quasimetric.py` on `qm_head_bestval.pth` in a second pane. The remaining
+training steps yield *zero* information about monotonicity until then.
 
 **If `iqe_d1` still fails gate (a)/(c)** after this: the next lever is the known
 **moving goal-side mask** confound — for a fixed goal, the per-pair *union* mask changes
