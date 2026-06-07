@@ -1,13 +1,13 @@
 """Cache frozen DINOv2 latents over FULL pusht_noise trajectories at the MODEL-STEP
-grid, for training the QRL quasimetric cost-to-go head.
+grid -- the data source for analysis/pose_decode_probe.py (the masked-DINO pose-
+decoding go/no-go for `g`).
 
 Why this (vs scripts/cache_latents.py, which only caches start+goal frames for the
-bridge `g`): the quasimetric needs (z_t, z_{t+1}) transition pairs and (z_t, z_goal)
-future pairs in the SAME step units the planner rolls out in. The DINO-WM dynamics
-advances one MODEL step = `frameskip` env frames, so we encode each trajectory at
-frame indices [0, frameskip, 2*frameskip, ...]. Consecutive cached latents are then
-exactly one model-step apart (constant local cost r = -1), so a head trained on them
-measures cost-to-go in model steps -- matching goal_H.
+bridge `g`): the pose-decode probe needs MANY frames per trajectory AND consecutive
+frames in time (for the smoothness/jitter control), in the SAME step units the planner
+rolls out in. The DINO-WM dynamics advances one MODEL step = `frameskip` env frames, so
+we encode each trajectory at frame indices [0, frameskip, 2*frameskip, ...]; consecutive
+cached latents are then exactly one model-step apart.
 
 Encoding reproduces VWorldModel.encode_obs byte-for-byte:
     frame uint8 --(dataset default_transform 224: Resize,CenterCrop,Normalize.5)-->
@@ -15,11 +15,12 @@ Encoding reproduces VWorldModel.encode_obs byte-for-byte:
     DinoV2Encoder.forward --> (196, 384) patch tokens.
 
 Also caches the raw env state per model-step frame (sim/512 coords,
-[ax,ay,bx,by,theta,vx,vy]); state[:,0:2] is the pusher xy used to build the
-manipulator mask at train time (identical helper as the planner).
+[ax,ay,bx,by,theta,vx,vy]): state[:,0:2] is the pusher xy used to build the manipulator
+mask (env.pusht.multicolor_common.manipulator_energy_mask, the same helper the planner
+uses); state[:,2:5] is the block pose (x,y,theta) the probe regresses.
 
-Output (per split) under <data_path>/qm_latents/<split>/:
-    latents.pth       (Ntot, 196, 384) float16   -- concatenated model-step latents
+Output (per split) under <data_path>/traj_latents/<split>/:
+    latents.pth       (Ntot, 196, 384) float16   -- concatenated model-step latents (UNMASKED)
     states.pth        (Ntot, state_dim) float32   -- raw states (sim coords)
     traj_starts.pth   (n_traj,) int64             -- start offset of each traj in latents
     traj_lengths.pth  (n_traj,) int64             -- #model-steps per traj
@@ -27,9 +28,9 @@ Output (per split) under <data_path>/qm_latents/<split>/:
 
 GPU run (vast.ai):
     cd dino_wm && source $WS/activate.sh
-    python scripts/cache_qm_latents.py --splits train val
+    python scripts/cache_traj_latents.py --splits train val
 Mac smoke (cpu; needs a small pusht_noise-shaped folder + decord):
-    .../dino_wm_dev/bin/python scripts/cache_qm_latents.py \
+    .../dino_wm_dev/bin/python scripts/cache_traj_latents.py \
         --data_path data/pusht_noise_smoke --splits train --device cpu --n_rollout 4
 """
 import os
@@ -106,9 +107,8 @@ def main():
         # PRE-ALLOCATE the latent tensor at its exact final size and fill it row-by-row.
         # The old code appended chunks then torch.cat'd, which transiently held ~2x the
         # cache in RAM (the chunk list AND the concatenated copy) and OOM'd the box when
-        # scaling past a few thousand trajs -- the very thing we need to do to fight the
-        # iqe_d0 overfitting. Pre-allocation keeps peak RAM at ~1x. (states are tiny --
-        # ~7 floats/step -- so they still use a cheap list+cat.)
+        # scaling past a few thousand trajs. Pre-allocation keeps peak RAM at ~1x. (states
+        # are tiny -- ~7 floats/step -- so they still use a cheap list+cat.)
         per_traj = [len(range(0, int(dset.get_seq_length(i)), args.frameskip))
                     for i in range(n_traj)]
         proj_steps = sum(s for s in per_traj if s >= 2)   # exact KEPT model-steps (skip <2)
@@ -149,7 +149,7 @@ def main():
         starts = torch.tensor(starts, dtype=torch.long)
         lengths = torch.tensor(lengths, dtype=torch.long)
 
-        out_dir = Path(args.data_path) / "qm_latents" / split
+        out_dir = Path(args.data_path) / "traj_latents" / split
         out_dir.mkdir(parents=True, exist_ok=True)
         torch.save(latents, out_dir / "latents.pth")
         torch.save(states, out_dir / "states.pth")
@@ -171,7 +171,7 @@ def main():
         print(f"[{split}] cached {latents.shape} ({gb:.2f} GB f16) + states {tuple(states.shape)} -> {out_dir}")
         print(f"[{split}] model-step traj length: min={meta['model_step_len_min']} "
               f"p50={meta['model_step_len_p50']:.0f} p90={meta['model_step_len_p90']:.0f} "
-              f"max={meta['model_step_len_max']}  <-- set phi OFFSET near p90/max")
+              f"max={meta['model_step_len_max']}")
 
     print("Done.")
 
