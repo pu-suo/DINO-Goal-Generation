@@ -4,7 +4,8 @@ Goal of the experiment: on the **stock** PushT model, decide whether a g-style e
 (visual latent L2 over **object** patches only, pusher patches dropped, proprio term OFF)
 plans to **SR ≥ 0.8 with a perfect (real) goal**. If yes → masked raw-L2 is viable, no VIP.
 If it stalls even with a perfect goal → the masked object-only energy is too flat → shaping
-problem → justifies VIP/quasimetric.
+problem → justifies a learned shaping term (e.g. VIP). (A learned quasimetric cost-to-go was
+tried for this and ruled out — see docs/RULED_OUT.md.)
 
 This note answers (a)–(e) from the actual code before any code change.
 

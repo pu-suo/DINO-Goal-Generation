@@ -46,8 +46,10 @@ Per the pre-registered rule:
 - **Masking caps the ceiling at ~0.8** (vs 1.0 with the proprio cheat). The proprio term was
   worth ~0.2 of shaping when the goal is real. For `g` (pusher unknown → alpha=0 forced) the
   operative ceiling is N2 = 0.8. The g-gate is ≥0.75 absolute and ≥0.85× oracle, so the margin
-  above 0.75 is thin (~0.05). If `g` later underperforms, *better shaping* (VIP/quasimetric to
-  raise the ceiling back toward 1.0) is the lever to revisit — but it is NOT needed to proceed.
+  above 0.75 is thin (~0.05). If `g` later underperforms, *better shaping* (a learned term, e.g.
+  VIP, to raise the ceiling back toward 1.0) is the lever to revisit — but it is NOT needed to
+  proceed. (A learned quasimetric cost-to-go was tried for this and did NOT beat the floor — see
+  docs/RULED_OUT.md.)
 - **This is the STOCK single-T isolation, not the multicolor held-out gate.** It de-risks the
   masked-energy design; the multicolor oracle ceiling (Phase-0 gate, ≥0.80 held-out) is a
   separate measurement on the retrained multicolor dynamics.
