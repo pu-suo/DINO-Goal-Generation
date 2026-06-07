@@ -96,10 +96,13 @@ def main():
     ap.add_argument("--log_every", type=int, default=200)
     ap.add_argument("--save_every", type=int, default=10000)
     ap.add_argument("--val_every", type=int, default=1000,
-                    help="every N steps, eval d_trans/d_sg on the VAL cache and print the "
-                         "train/val gap LIVE (iqe_d0 overfit silently -- we only caught it at the "
-                         "post-hoc gate after 5h). Also saves qm_head_bestval.pth at the lowest "
-                         "val local-cost violation. 0 disables.")
+                    help="every N steps, report ABSOLUTE held-out health on the VAL cache "
+                         "(gate-c scale band, d_sg-collapse, and a gate-(a) MONOTONICITY proxy) "
+                         "and save qm_head_bestval.pth at the BEST held-out monotonicity. iqe_d0 "
+                         "overfit silently; this surfaces the decisive ordering signal live. 0 disables.")
+    ap.add_argument("--val_mono_k", type=int, default=8,
+                    help="#val trajectories for the live monotonicity proxy (cheap; the full "
+                         "analysis/validate_quasimetric.py uses 40 and is the real arbiter).")
     ap.add_argument("--smoke", action="store_true", help="tiny CPU smoke run on the smoke cache")
     args = ap.parse_args()
 
@@ -121,18 +124,25 @@ def main():
         num_workers=args.num_workers, worker_init_fn=worker_init_fn if args.num_workers else None)
     it = cycle(loader)
 
-    # LIVE val monitor. iqe_d0 overfit silently (held-out adjacent-d ~9x train) and we
-    # only found out at the post-hoc validation gate, after a 5h run. Pull batches from the
-    # val cache during training so the train/val gap is visible every --val_every steps,
-    # and persist the checkpoint that GENERALIZES best (lowest val local-cost violation,
-    # i.e. val d_trans closest to 1) as qm_head_bestval.pth -- that is the one to validate
-    # and plan with. Best-effort: disabled cleanly if the val cache is absent/tiny.
+    # LIVE val monitor. iqe_d0 overfit silently and we only caught it at the post-hoc gate
+    # after hours. Each --val_every steps we report ABSOLUTE, gate-aligned held-out health:
+    #   - val adjacent-d in the gate-(c) band 0.5..2.0   (scale)
+    #   - val d_sg not collapsed (>3)                     (spreading didn't die)
+    #   - val MONOTONICITY proxy (gate-(a)): the decisive signal -- d(z_t, z_goal) should
+    #     DECREASE toward the goal. The level metrics (d_trans/d_sg) are BLIND to this
+    #     (d_sg is phi-saturated and uses random cross-traj anchors), and a val/train RATIO
+    #     is misleading (it inflates when TRAIN d_trans collapses, which the one-sided
+    #     constraint permits, even when val is fine). bestval is chosen by MONOTONICITY,
+    #     not scale -- that is what gate (a) and CEM ordering actually need.
+    # Best-effort: disabled cleanly if the val cache is absent/tiny.
     val_it = None
+    val_dset = None
     if args.val_every > 0 and not args.smoke:
         try:
-            val_dset = QMLatentDataset(args.cache_dir, "val", mask_dilation=args.mask_dilation,
-                                       p_random_goal=args.p_random_goal, max_goal_offset=args.max_goal_offset)
-            if len(val_dset) > 0:
+            vds_tmp = QMLatentDataset(args.cache_dir, "val", mask_dilation=args.mask_dilation,
+                                      p_random_goal=args.p_random_goal, max_goal_offset=args.max_goal_offset)
+            if len(vds_tmp) > 0:
+                val_dset = vds_tmp
                 vb = min(args.batch, len(val_dset))
                 val_loader = torch.utils.data.DataLoader(val_dset, batch_size=vb, shuffle=True,
                                                          drop_last=False, num_workers=0)
@@ -141,7 +151,7 @@ def main():
                 print("[val] val cache has 0 transitions; monitoring disabled")
         except Exception as e:
             print(f"[val] monitoring disabled (no/unreadable val cache: {e})")
-    best_val_score = float("inf")
+    best_val_mono = -1.0   # maximize held-out monotonicity (gate-(a) proxy)
 
     head_cfg = dict(head_type=args.head_type, proj_out=args.proj_out,
                     dim_per_component=args.dim_per_component, f_out=args.f_out,
@@ -154,6 +164,27 @@ def main():
         torch.save(dict(state_dict=head.state_dict(), head_cfg=head_cfg, args=vars(args),
                         mask_dilation=args.mask_dilation, phi_offset=args.phi_offset,
                         phi_beta=args.phi_beta, eps=args.eps, step=step, **extra), path)
+
+    @torch.no_grad()
+    def val_monotonicity(k):
+        """Cheap held-out gate-(a) proxy: mean decreasing-fraction of d(z_{s+t}, z_goal)
+        along k val trajectories (goal = last model-step), per-traj batched. Mirrors
+        analysis/validate_quasimetric.py gate (a) -- the ORDERING CEM relies on, and the
+        one thing the d_trans/d_sg level metrics cannot see. Returns NaN if unavailable."""
+        if val_dset is None:
+            return float("nan")
+        trajs = list(zip(val_dset.starts, val_dset.lengths))
+        fr = []
+        for s, L in trajs[:min(k, len(trajs))]:
+            if L < 3:
+                continue
+            g = s + L - 1
+            za = val_dset.latents[s:s + L].float().to(device)                       # (L,196,384)
+            zb = val_dset.latents[g].float().unsqueeze(0).expand(L, -1, -1).to(device)
+            keep = torch.stack([val_dset._keep(s + t, g) for t in range(L)]).to(device)  # (L,196)
+            ds = head(za, zb, keep).cpu().numpy()                                    # (L,) d(z_{s+t}, z_g)
+            fr.append(float((np.diff(ds) < 0).mean()))
+        return float(np.mean(fr)) if fr else float("nan")
 
     lam_raw = torch.nn.Parameter(torch.tensor(float(inv_softplus(args.lambda_init)), device=device))
     opt = torch.optim.AdamW(head.parameters(), lr=args.model_lr, weight_decay=args.weight_decay)
@@ -206,24 +237,33 @@ def main():
                 vbm = next(val_it)
                 vdt = head(vbm["z_a"].to(device), vbm["z_b"].to(device), vbm["keep_ab"].to(device))
                 vds = head(vbm["z_s"].to(device), vbm["z_g"].to(device), vbm["keep_sg"].to(device))
-                v_viol = float(F.relu(vdt - 1.0).pow(2).mean())
                 v_dt, v_ds = float(vdt.mean()), float(vds.mean())
+            v_mono = val_monotonicity(args.val_mono_k)   # held-out gate-(a) proxy (decisive)
             head.train()
-            tr_dt = float(d_trans.mean())
-            ratio = v_dt / (tr_dt + 1e-9)
-            warn = "  <-- OVERFIT: val d_trans >> train" if ratio > 2.0 else ""
-            print(f"   [val] d_trans {v_dt:.3f} (train {tr_dt:.3f}, val/train {ratio:.2f}x) "
-                  f"d_sg {v_ds:.3f} viol {v_viol:.4f}{warn}")
-            # Best-generalizing checkpoint = val adjacent-d CLOSEST TO 1 (two-sided |d-1|;
-            # this is gate (c)), among steps where the embedding has actually SPREAD
-            # (val d_sg > 3, i.e. NOT the collapsed/untrained state). NB: a one-sided
-            # relu(d-1)^2 is gamed by collapse -- it is 0 whenever d_trans<1, which pins
-            # "best" to the untrained step-1 head and never updates.
-            v_score = abs(v_dt - 1.0)
-            if v_ds > 3.0 and v_score < best_val_score:
-                best_val_score = v_score
+            # ABSOLUTE, gate-aligned flags (each maps 1:1 onto a real gate). The old
+            # val/train RATIO was misleading -- it inflates when TRAIN d_trans collapses
+            # (which the one-sided constraint permits) even while val is healthy, and it is
+            # blind to monotonicity, the only thing that decides planning.
+            flags = []
+            if not (0.5 < v_dt < 2.0):                          # gate (c): scale band
+                flags.append("SCALE")
+            if v_ds < 3.0:                                      # spreading collapsed
+                flags.append("DSG_COLLAPSE")
+            if not math.isnan(v_mono) and v_mono < 0.7:         # gate (a): monotonicity
+                flags.append("MONO")
+            tag = ("  <-- WARN: " + ",".join(flags)) if flags else ""
+            mono_s = "nan" if math.isnan(v_mono) else f"{v_mono:.2f}"
+            print(f"   [val] d_trans {v_dt:.3f} (gate-c 0.5-2.0) d_sg {v_ds:.3f} "
+                  f"mono {mono_s} (gate-a>0.7){tag}")
+            # Best = HIGHEST held-out monotonicity (what gate (a) and CEM ordering need),
+            # among scale-sane, spread checkpoints. The previous abs(val_d_trans-1) selector
+            # was SCALE-only and blind to shape -- it could pin "best" on an
+            # under-constrained-drift step that fails monotonicity.
+            if (0.5 < v_dt < 2.0) and v_ds > 3.0 and not math.isnan(v_mono) \
+                    and v_mono > best_val_mono:
+                best_val_mono = v_mono
                 save_ckpt(out / "qm_head_bestval.pth", step,
-                          val_score=v_score, val_d_trans=v_dt, val_d_sg=v_ds)
+                          val_mono=v_mono, val_d_trans=v_dt, val_d_sg=v_ds)
 
         if step % args.save_every == 0 or step == args.steps:
             save_ckpt(out / "qm_head.pth", step)        # latest (crash recovery)
@@ -249,9 +289,10 @@ def main():
 
     print(f"Done. final head -> {out/'qm_head.pth'}")
     if (out / "qm_head_bestval.pth").exists():
-        print(f"BEST-VAL head -> {out/'qm_head_bestval.pth'} (val adjacent-d off-by-{best_val_score:.3f}). "
-              f"Validate and PLAN with this one -- it generalizes best; the final head may have "
-              f"overfit. (If val/train d_trans stayed ~1x throughout, the two are equivalent.)")
+        print(f"BEST-VAL head -> {out/'qm_head_bestval.pth'} (held-out monotonicity {best_val_mono:.2f}). "
+              f"Validate and PLAN with this one -- it has the best held-out cost-to-go ORDERING "
+              f"(gate (a)), which is what CEM needs; the final head may have drifted. Still run the "
+              f"full analysis/validate_quasimetric.py -- the live proxy uses only {args.val_mono_k} trajs.")
 
 
 if __name__ == "__main__":
