@@ -141,7 +141,7 @@ def main():
                 print("[val] val cache has 0 transitions; monitoring disabled")
         except Exception as e:
             print(f"[val] monitoring disabled (no/unreadable val cache: {e})")
-    best_val_viol = float("inf")
+    best_val_score = float("inf")
 
     head_cfg = dict(head_type=args.head_type, proj_out=args.proj_out,
                     dim_per_component=args.dim_per_component, f_out=args.f_out,
@@ -214,9 +214,16 @@ def main():
             warn = "  <-- OVERFIT: val d_trans >> train" if ratio > 2.0 else ""
             print(f"   [val] d_trans {v_dt:.3f} (train {tr_dt:.3f}, val/train {ratio:.2f}x) "
                   f"d_sg {v_ds:.3f} viol {v_viol:.4f}{warn}")
-            if v_viol < best_val_viol:
-                best_val_viol = v_viol
-                save_ckpt(out / "qm_head_bestval.pth", step, val_viol=v_viol, val_d_trans=v_dt)
+            # Best-generalizing checkpoint = val adjacent-d CLOSEST TO 1 (two-sided |d-1|;
+            # this is gate (c)), among steps where the embedding has actually SPREAD
+            # (val d_sg > 3, i.e. NOT the collapsed/untrained state). NB: a one-sided
+            # relu(d-1)^2 is gamed by collapse -- it is 0 whenever d_trans<1, which pins
+            # "best" to the untrained step-1 head and never updates.
+            v_score = abs(v_dt - 1.0)
+            if v_ds > 3.0 and v_score < best_val_score:
+                best_val_score = v_score
+                save_ckpt(out / "qm_head_bestval.pth", step,
+                          val_score=v_score, val_d_trans=v_dt, val_d_sg=v_ds)
 
         if step % args.save_every == 0 or step == args.steps:
             save_ckpt(out / "qm_head.pth", step)        # latest (crash recovery)
@@ -242,7 +249,7 @@ def main():
 
     print(f"Done. final head -> {out/'qm_head.pth'}")
     if (out / "qm_head_bestval.pth").exists():
-        print(f"BEST-VAL head -> {out/'qm_head_bestval.pth'} (val local-cost viol {best_val_viol:.4f}). "
+        print(f"BEST-VAL head -> {out/'qm_head_bestval.pth'} (val adjacent-d off-by-{best_val_score:.3f}). "
               f"Validate and PLAN with this one -- it generalizes best; the final head may have "
               f"overfit. (If val/train d_trans stayed ~1x throughout, the two are equivalent.)")
 
