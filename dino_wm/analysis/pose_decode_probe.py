@@ -23,20 +23,29 @@ WHAT IT MEASURES (all on cached pusht_noise latents -- no re-encoding)
              with the SAME manipulator_energy_mask the planner's energy uses).
   CONTROL 2: decode the SAME pose from the FULL UNMASKED latent; report
              (unmasked_err - masked_err) = how much the pusher carried the signal.
-  CONTROL 3: SMOOTHNESS -- decode theta over time on held-out trajectories and
-             report the frame-to-frame jitter (std of first-differences) of the
-             decoded theta vs ground truth. Direct test of the "jittery fine-pose"
-             hypothesis the quasimetric inherited.
+  CONTROL 3: SMOOTHNESS -- decode theta over time on held-out trajectories (with the
+             overfit-free LINEAR decoder) and report the RESIDUAL jitter: the std of
+             d(unwrap(decoded)) - d(unwrap(true)), i.e. the frame-to-frame decode-error
+             change (isolates decode jitter from the true rotation-speed variability).
+             Direct test of the "jittery fine-pose" hypothesis the quasimetric inherited.
 
-DIAGNOSIS THRESHOLDS (printed against the 20px / 20deg gate; key off MASKED MLP)
+Probes: a LINEAR ridge (on the full latent; the robust decodability bound + the decoder
+reused for smoothness) and a 2-layer MLP on PCA-reduced features (a well-conditioned
+nonlinear probe -- a wide net over the raw 75264-dim grid overfits and cannot beat the
+linear probe, making nonlinear entanglement undetectable). The verdict keys off the
+BETTER decoder's masked orientation MAE.
+
+DIAGNOSIS THRESHOLDS (printed against the 20px / 20deg gate; keyed off the masked
+orientation MAE of the BETTER decoder -- a latent either contains the info or it
+does not, so the tighter of {linear, MLP} is the honest decodability bound)
   orientation MAE < ~15 deg  -> pose IS present; bottleneck is search/value, not
                                 the representation; `g` is viable on this latent.
-  orientation MAE > ~30-40deg -> hard representational ceiling; the masked DINO
-                                latent cannot resolve fine orientation; a higher-
-                                resolution representation is on the critical path.
-  ~15-25 deg                 -> borderline: enough for the loose 20deg tolerance
-                                on most goals, jittery on hard rotations (consistent
-                                with the observed 0.80).
+  ~15-30 deg                 -> borderline: enough for the loose 20deg tolerance on
+                                most goals, jittery on hard rotations (consistent with
+                                the observed 0.80). 25-30 deg leans toward the ceiling.
+  orientation MAE > ~30 deg  -> hard representational ceiling; the masked DINO latent
+                                cannot resolve fine orientation; a higher-resolution
+                                representation is on the critical path before `g`.
   If orientation MAE > 20deg -> the representation's OWN pose noise exceeds the
                                 success criterion: no planner can reliably hit the
                                 target regardless of the value function.
@@ -167,19 +176,48 @@ def wrapped_deg(theta_true, cos_p, sin_p):
 
 
 # ---------------------------------------------------------------------- regressors
-def ridge_dual(Xtr, Ytr, Xte, lam, device):
+def fit_linear(Xtr, Ytr, Xte, lam, device):
+    """Dual ridge with intercept on the FULL flattened latent. Returns test preds AND
+    a reusable primal decoder {mu,sd,W,ymu} so the SAME linear map can be applied to
+    new frames. The linear probe is the robust, overfit-free decoder -- it is what the
+    smoothness control uses (an MLP on 75264 dims overfits and fabricates jitter)."""
     mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True) + 1e-6
-    Xtr = ((Xtr - mu) / sd).to(device)
-    Xte = ((Xte - mu) / sd).to(device)
-    ymu = Ytr.mean(0, keepdim=True).to(device)        # intercept: center Y (x,y are ~256, not 0)
-    Ytr = Ytr.to(device) - ymu
-    K = Xtr @ Xtr.T
+    Xtr_s = ((Xtr - mu) / sd).to(device)
+    Xte_s = ((Xte - mu) / sd).to(device)
+    ymu = Ytr.mean(0, keepdim=True).to(device)        # intercept: x,y are ~256, not 0
+    Yc = Ytr.to(device) - ymu
+    K = Xtr_s @ Xtr_s.T
     A = K + lam * torch.eye(K.shape[0], device=device)
-    alpha = torch.linalg.solve(A, Ytr)
-    return ((Xte @ Xtr.T) @ alpha + ymu).cpu()
+    alpha = torch.linalg.solve(A, Yc)                 # (n,4)
+    W = Xtr_s.T @ alpha                               # (D,4) primal weights
+    pred = (Xte_s @ W + ymu).cpu()
+    return pred, {"mu": mu, "sd": sd, "W": W.cpu(), "ymu": ymu.cpu()}
+
+
+def predict_linear(dec, Xflat):
+    """Apply a fit_linear decoder to flattened latents Xflat (M,D) -> (M,4) preds."""
+    return ((Xflat - dec["mu"]) / dec["sd"]) @ dec["W"] + dec["ymu"]
+
+
+def pca_features(Xtr_full, Xte, q, device):
+    """Standardize on train, then project train+test onto the top-q PCA basis.
+
+    The MLP probe runs on these low-dim features (not the raw 75264-dim grid): a wide
+    first layer over 75264 mostly-uninformative dims overfits and CANNOT beat the linear
+    probe, which would make the 'nonlinear entanglement' question unanswerable. PCA
+    whitening fixes the conditioning so the MLP is a fair nonlinear decodability probe.
+    """
+    mu, sd = Xtr_full.mean(0, keepdim=True), Xtr_full.std(0, keepdim=True) + 1e-6
+    Xtr_s = ((Xtr_full - mu) / sd).to(device)
+    q = int(min(q, Xtr_s.shape[0] - 1, Xtr_s.shape[1]))
+    _, _, V = torch.pca_lowrank(Xtr_s, q=q, center=False)   # V: (D,q); inputs ~zero-mean
+    Xtr_p = (Xtr_s @ V).cpu(); del Xtr_s
+    Xte_p = (((Xte - mu) / sd).to(device) @ V).cpu()
+    return Xtr_p, Xte_p
 
 
 def train_mlp(Xtr, Ytr, Xte, epochs, lr, wd, hidden, device, dropout=0.1):
+    """2-layer MLP on (PCA-reduced) features -- the nonlinear decodability probe."""
     mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True) + 1e-6
     Xtr = ((Xtr - mu) / sd).to(device)
     Xte = ((Xte - mu) / sd).to(device)
@@ -197,8 +235,7 @@ def train_mlp(Xtr, Ytr, Xte, epochs, lr, wd, hidden, device, dropout=0.1):
             opt.zero_grad(); lossf(net(Xtr[idx]), Ytr_n[idx]).backward(); opt.step()
     net.eval()
     with torch.no_grad():
-        pred = (net(Xte).cpu() * scale)
-    return pred, (net, mu, sd, scale)
+        return (net(Xte).cpu() * scale)
 
 
 # -------------------------------------------------------------------------- report
@@ -211,8 +248,8 @@ def score(name, pred, pose_te):
     ang = wrapped_deg(theta_true, pred[:, 2], pred[:, 3])
     m = {
         "x_mae_px": float(dx.abs().mean()), "y_mae_px": float(dy.abs().mean()),
-        "pos_l2_mae_px": float(pos_l2.mean()), "pos_l2_median_px": float(pos_l2.median()),
-        "theta_mae_deg": float(ang.mean()), "theta_median_deg": float(ang.median()),
+        "pos_l2_mae_px": float(pos_l2.mean()), "pos_l2_median_px": float(pos_l2.quantile(0.5)),
+        "theta_mae_deg": float(ang.mean()), "theta_median_deg": float(ang.quantile(0.5)),
         "frac_pos_lt20": float((pos_l2 < POS_TOL_PX).float().mean()),
         "frac_ang_lt20": float((ang < ANG_TOL_DEG).float().mean()),
         "frac_both": float(((pos_l2 < POS_TOL_PX) & (ang < ANG_TOL_DEG)).float().mean()),
@@ -224,9 +261,14 @@ def score(name, pred, pose_te):
 
 
 # ------------------------------------------------------------------------ smoothness
-def smoothness(model, latents, states, te_slices, dilation, n_traj, min_len, device, masked):
-    """Decode theta over time on held-out trajs; jitter = std of first-diffs."""
-    net, mu, sd, scale = model
+def smoothness(dec, latents, states, te_slices, dilation, n_traj, min_len, masked):
+    """Decode theta over time on held-out trajs with the (overfit-free) LINEAR decoder.
+
+    Headline metric = RESIDUAL jitter: std of d(unwrap(decoded)) - d(unwrap(true)) -- the
+    frame-to-frame DECODE-error change. This isolates decoder jitter from the true
+    rotation-speed variability (raw decoded/true step-stds are kept only for context).
+    Using the linear probe avoids the MLP fabricating jitter on the 75264-dim input.
+    """
     rows = []
     chosen = [(s, L) for (s, L) in te_slices if L >= min_len][:n_traj]
     for (s, L) in chosen:
@@ -234,18 +276,15 @@ def smoothness(model, latents, states, te_slices, dilation, n_traj, min_len, dev
         z = gather_latents(latents, idx)                       # (L,196,384)
         st = states[idx]
         if masked:
-            keep = build_keep_masks(st, dilation)
-            z = z * keep[:, :, None]
-        X = z.reshape(L, -1)
-        X = ((X - mu) / sd).to(device)
-        with torch.no_grad():
-            pred = (net(X).cpu() * scale)
-        th_dec = torch.atan2(pred[:, 3], pred[:, 2]).numpy()   # decoded theta (wrapped)
+            z = z * build_keep_masks(st, dilation)[:, :, None]
+        pred = predict_linear(dec, z.reshape(L, -1))           # (L,4)
+        th_dec = torch.atan2(pred[:, 3], pred[:, 2]).numpy()
         th_true = st[:, 4].numpy()
         # unwrap before diffing so a +/-2pi seam isn't counted as jitter
         d_dec = np.diff(np.unwrap(th_dec))
         d_true = np.diff(np.unwrap(th_true))
         rows.append({"start": int(s), "len": int(L),
+                     "jit_resid_deg": float(np.rad2deg(np.std(d_dec - d_true))),
                      "jit_dec_deg": float(np.rad2deg(np.std(d_dec))),
                      "jit_true_deg": float(np.rad2deg(np.std(d_true))),
                      "th_dec": th_dec, "th_true": th_true})
@@ -269,6 +308,7 @@ def diagnose(masked_mlp, masked_ridge, unmasked_mlp, unmasked_ridge, jit_rows):
     pos_frac = max(masked_mlp["frac_pos_lt20"], masked_ridge["frac_pos_lt20"])
     # control 2 on the DRIVER probe: <0 means unmasked decodes orientation better
     pusher_gain = drv_unmasked["theta_mae_deg"] - drv_masked["theta_mae_deg"]
+    jit_resid = float(np.mean([r["jit_resid_deg"] for r in jit_rows])) if jit_rows else float("nan")
     jit_dec = float(np.mean([r["jit_dec_deg"] for r in jit_rows])) if jit_rows else float("nan")
     jit_true = float(np.mean([r["jit_true_deg"] for r in jit_rows])) if jit_rows else float("nan")
 
@@ -291,7 +331,8 @@ def diagnose(masked_mlp, masked_ridge, unmasked_mlp, unmasked_ridge, jit_rows):
               "     PATH BEFORE building `g`."]
         verdict = "representation_ceiling"
     else:
-        L += [f"ORIENTATION: {ang:.1f}deg in [15,30] -> BORDERLINE.",
+        lean = " (25-30deg -> leaning toward the ceiling)" if ang > 25 else ""
+        L += [f"ORIENTATION: {ang:.1f}deg in [15,30) -> BORDERLINE{lean}.",
               "  Enough for the loose 20deg tolerance on most goals, but jittery on hard",
               "  rotations -- consistent with the observed oracle SR~0.80.",
               "  => `g` is plausibly viable; expect a soft orientation ceiling."]
@@ -326,12 +367,12 @@ def diagnose(masked_mlp, masked_ridge, unmasked_mlp, unmasked_ridge, jit_rows):
     else:
         L += [f"PUSHER: {driver} unmasked-masked theta MAE gap = {pusher_gain:+.1f}deg (small) -> the "
               "object-only latent carries the pose on its own; the pusher was not the anchor."]
-    # --- smoothness (control 3) ---
-    L += [f"SMOOTHNESS: decoded-theta frame-to-frame jitter {jit_dec:.1f}deg vs ground-truth "
-          f"{jit_true:.1f}deg (held-out trajs).",
-          ("  Decoded theta is much noisier than the true motion -> 'jittery fine-pose' confirmed."
-           if jit_dec > jit_true + 3 else
-           "  Decoded theta tracks the true motion smoothly -> no pathological jitter.")]
+    # --- smoothness (control 3), linear decoder, residual (decode-error) jitter ---
+    L += [f"SMOOTHNESS (linear decoder): residual frame-to-frame jitter {jit_resid:.1f}deg "
+          f"(decoded step std {jit_dec:.1f} vs true {jit_true:.1f}, held-out trajs).",
+          ("  Decode jitter > ~5deg -> 'jittery fine-pose' present in the masked latent."
+           if jit_resid > 5 else
+           "  Decode tracks the true motion smoothly -> no pathological fine-pose jitter.")]
     L += ["=" * 72]
     print("\n".join(L))
     return {"verdict": verdict, "driver": driver,
@@ -339,8 +380,8 @@ def diagnose(masked_mlp, masked_ridge, unmasked_mlp, unmasked_ridge, jit_rows):
             "masked_theta_mae_mlp_deg": mlp_ang, "masked_theta_mae_linear_deg": ridge_ang,
             "linear_minus_mlp_gap_deg": lin_mlp_gap,
             "masked_pos_l2_mae_px": pos, "pusher_theta_gain_deg": pusher_gain,
-            "jitter_decoded_deg": jit_dec, "jitter_true_deg": jit_true,
-            "summary": "\n".join(L)}
+            "jitter_residual_deg": jit_resid, "jitter_decoded_deg": jit_dec,
+            "jitter_true_deg": jit_true, "summary": "\n".join(L)}
 
 
 # ---------------------------------------------------------------------------- plots
@@ -390,14 +431,19 @@ def save_plots(out_dir, preds, pose_te, pos_ang, jit_rows):
 
 # ------------------------------------------------------------------------------ main
 def run_condition(name, Xtr_full, ridge_idx, pose_tr, Xte, pose_te, args, device):
-    """ridge on the capped subset (kernel cost), MLP once on the full train set."""
+    """LINEAR (ridge on the full latent, capped subset for the kernel; reusable decoder)
+    + MLP on PCA-reduced features. Returns metrics, preds, the linear decoder, and the
+    per-sample (pos_l2, ang) of whichever decoder has the lower orientation MAE (for the
+    masked error histogram / driver consistency)."""
     print(f"[{name}] decode block pose (lower is better):")
-    rp = ridge_dual(Xtr_full[ridge_idx], pose_tr[ridge_idx], Xte, args.ridge_lambda, device)
-    rm, _, _ = score(f"{name}/ridge", rp, pose_te)
-    mp, model = train_mlp(Xtr_full, pose_tr, Xte, args.mlp_epochs, args.mlp_lr, args.mlp_wd,
-                          args.mlp_hidden, device)
-    mm, pos_l2, ang = score(f"{name}/mlp  ", mp, pose_te)
-    return {"ridge": rm, "mlp": mm}, {"ridge": rp, "mlp": mp}, model, (pos_l2, ang)
+    rp, lin_dec = fit_linear(Xtr_full[ridge_idx], pose_tr[ridge_idx], Xte, args.ridge_lambda, device)
+    rm, rpos, rang = score(f"{name}/linear ", rp, pose_te)
+    Xtr_p, Xte_p = pca_features(Xtr_full, Xte, args.pca_dim, device)
+    mp = train_mlp(Xtr_p, pose_tr, Xte_p, args.mlp_epochs, args.mlp_lr, args.mlp_wd,
+                   args.mlp_hidden, device)
+    mm, mpos, mang = score(f"{name}/mlp-pca", mp, pose_te)
+    pa = (rpos, rang) if rm["theta_mae_deg"] <= mm["theta_mae_deg"] else (mpos, mang)
+    return {"ridge": rm, "mlp": mm}, {"ridge": rp, "mlp": mp}, lin_dec, pa
 
 
 def main():
@@ -414,6 +460,7 @@ def main():
     ap.add_argument("--max_test_frames", type=int, default=8000)
     ap.add_argument("--ridge_max", type=int, default=6000, help="cap train rows for the ridge kernel")
     ap.add_argument("--ridge_lambda", type=float, default=10.0)
+    ap.add_argument("--pca_dim", type=int, default=256, help="PCA dims for the MLP input")
     ap.add_argument("--mlp_epochs", type=int, default=200)
     ap.add_argument("--mlp_lr", type=float, default=1e-3)
     ap.add_argument("--mlp_wd", type=float, default=1e-4)
@@ -451,33 +498,33 @@ def main():
     out = {"split": args.split, "cache_dir": args.cache_dir, "device": device,
            "n_train": int(len(tr_idx)), "n_test": int(len(te_idx)),
            "pos_tol_px": POS_TOL_PX, "ang_tol_deg": ANG_TOL_DEG, "meta": meta}
-    preds_all, metrics, models = {}, {}, {}
+    preds_all, metrics, lin_decoders = {}, {}, {}
     pos_ang_masked = None
     for name, masked in [("masked", True), ("unmasked", False)]:
         Xtr_full = (z_tr * keep_tr[:, :, None]) if masked else z_tr
         Xte = (z_te * keep_te[:, :, None]) if masked else z_te
         Xtr_full = Xtr_full.reshape(len(tr_idx), -1)
         Xte = Xte.reshape(len(te_idx), -1)
-        m, p, model, pa = run_condition(
+        m, p, lin_dec, pa = run_condition(
             name, Xtr_full, ridge_tr, pose_tr, Xte, pose_te, args, device)
-        metrics[name], models[name] = m, model
+        metrics[name], lin_decoders[name] = m, lin_dec
         preds_all[f"{name}_ridge"], preds_all[f"{name}_mlp"] = p["ridge"], p["mlp"]
         if masked:
             pos_ang_masked = pa
         del Xtr_full, Xte
 
-    print("\n[control 3] smoothness on held-out trajectories (masked):")
-    jit = smoothness(models["masked"], latents, states, te_slices, args.dilation,
-                     args.n_smooth_traj, args.min_smooth_len, device, masked=True)
+    print("\n[control 3] smoothness on held-out trajectories (masked, linear decoder):")
+    jit = smoothness(lin_decoders["masked"], latents, states, te_slices, args.dilation,
+                     args.n_smooth_traj, args.min_smooth_len, masked=True)
     for r in jit:
-        print(f"  traj@{r['start']:>6} L={r['len']:>2}: jitter decoded {r['jit_dec_deg']:5.1f}deg "
-              f"vs true {r['jit_true_deg']:5.1f}deg")
+        print(f"  traj@{r['start']:>6} L={r['len']:>2}: residual jitter {r['jit_resid_deg']:5.1f}deg "
+              f"(decoded step {r['jit_dec_deg']:5.1f} vs true {r['jit_true_deg']:5.1f})")
 
     diag = diagnose(metrics["masked"]["mlp"], metrics["masked"]["ridge"],
                     metrics["unmasked"]["mlp"], metrics["unmasked"]["ridge"], jit)
 
     out["masked"], out["unmasked"] = metrics["masked"], metrics["unmasked"]
-    out["smoothness"] = [{k: r[k] for k in ("start", "len", "jit_dec_deg", "jit_true_deg")} for r in jit]
+    out["smoothness"] = [{k: r[k] for k in ("start", "len", "jit_resid_deg", "jit_dec_deg", "jit_true_deg")} for r in jit]
     out["diagnosis"] = diag
     json.dump(out, open(Path(args.out) / "pose_decode_probe.json", "w"), indent=2)
     save_plots(args.out, preds_all, pose_te, pos_ang_masked, jit)

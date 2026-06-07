@@ -37,11 +37,13 @@ encoder / dynamics / planner / mask. Output → `analysis_outputs/pose_decode_pr
   with the planner's `manipulator_energy_mask` — the exact mask the energy uses).
 - **CONTROL 2 (pusher contribution):** decode the same pose from the **full unmasked** latent;
   report `unmasked − masked` orientation error. A large gap ⇒ the pusher was carrying the pose.
-- **CONTROL 3 (smoothness):** decode θ over time on held-out trajectories; report frame-to-frame
-  **jitter** (std of first-differences) of decoded vs true θ. Direct test of the "jittery
-  fine-pose" hypothesis the quasimetric inherited.
-- Two probes per condition: a **linear** ridge and a **2-layer MLP** (the linear↔MLP gap shows
-  whether pose is cleanly accessible or present-but-entangled).
+- **CONTROL 3 (smoothness):** decode θ over time on held-out trajectories (with the overfit-free
+  **linear** decoder) and report the **residual jitter** — std of `d(unwrap(decoded)) −
+  d(unwrap(true))`, the frame-to-frame decode-error change (isolates decode jitter from the true
+  rotation-speed variability). Direct test of the "jittery fine-pose" hypothesis.
+- Two probes per condition: a **linear** ridge (on the full latent) and a **2-layer MLP on
+  PCA-reduced features** (a wide net over the raw 75264-dim grid overfits and can't beat the
+  linear probe). The linear↔MLP gap shows whether pose is cleanly accessible or present-but-entangled.
 - **Trajectory split** (whole trajs held out — never a frame split, which overstates decodability).
 - Angle handled as `(sin, cos)` → `atan2` → wrapped minimal difference; the PushT T is **C1
   (no rotational symmetry)** so the full `[0, 2π)` range applies (no folding). Position error is
@@ -49,11 +51,13 @@ encoder / dynamics / planner / mask. Output → `analysis_outputs/pose_decode_pr
 
 ## How to read the diagnosis (it prints one; keyed off the masked latent)
 
+(keyed off the masked orientation MAE of the **better** of the two decoders)
+
 | masked orientation MAE | verdict |
 |---|---|
 | **< ~15°** | pose **IS present** → quasimetric failure was search/value, not representation → **`g` is viable** |
-| **~15–25°** | **borderline** — fine for the loose 20° gate on most goals, jittery on hard rotations (consistent with the observed 0.80) |
-| **> ~30–40°** | **hard representational ceiling** → a higher-resolution representation is on the critical path **before** `g` |
+| **~15–30°** | **borderline** — fine for the loose 20° gate on most goals, jittery on hard rotations (consistent with the observed 0.80); **25–30° leans toward the ceiling** |
+| **> ~30°** | **hard representational ceiling** → a higher-resolution representation is on the critical path **before** `g` |
 
 Extra flags the diagnosis raises:
 - If orientation MAE **> 20°**: the representation's own pose noise exceeds the success

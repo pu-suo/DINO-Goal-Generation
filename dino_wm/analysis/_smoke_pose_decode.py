@@ -93,24 +93,27 @@ def main():
 
         rep = json.load(open(os.path.join(out, "pose_decode_probe.json")))
         mr, mm, diag = rep["masked"]["ridge"], rep["masked"]["mlp"], rep["diagnosis"]
+        jr = diag["jitter_residual_deg"]
         print(f"\nSMOKE CHECK: masked LINEAR theta={mr['theta_mae_deg']:.1f}deg pos={mr['pos_l2_mae_px']:.1f}px"
-              f" | masked MLP theta={mm['theta_mae_deg']:.1f}deg pos={mm['pos_l2_mae_px']:.1f}px"
-              f" | verdict={diag['verdict']}")
+              f" | masked MLP(pca) theta={mm['theta_mae_deg']:.1f}deg pos={mm['pos_l2_mae_px']:.1f}px"
+              f" | resid_jitter={jr:.1f}deg | verdict={diag['verdict']}")
         for f in ("theta_scatter.png", "xy_scatter.png", "theta_time.png", "err_hist.png"):
             assert os.path.exists(os.path.join(out, f)), f"missing plot {f}"
-        # The LINEAR probe must near-perfectly decode this clean low-rank signal -- this is
-        # the definitive check that the probe math (pos L2, angle wrap/atan2, masking, traj
-        # split) is correct. (The MLP overfits a tiny perfectly-linear synthetic set, which
-        # is its worst case and not representative of the real ~16k-frame run.)
+        # The LINEAR probe must near-perfectly decode this clean low-rank signal -- the
+        # definitive check that the probe math (pos L2, angle wrap/atan2, masking, traj
+        # split, ridge intercept) is correct.
         assert mr["theta_mae_deg"] < 5, f"LINEAR theta {mr['theta_mae_deg']:.1f}deg -- math broken"
         assert mr["pos_l2_mae_px"] < 20, f"LINEAR pos_L2 {mr['pos_l2_mae_px']:.1f}px -- math broken"
         assert mr["frac_both"] > 0.9, f"LINEAR within-gate frac {mr['frac_both']:.2f} -- math broken"
-        # MLP path must at least run and produce finite, non-NaN metrics
-        assert np.isfinite(mm["theta_mae_deg"]) and np.isfinite(mm["pos_l2_mae_px"])
+        # Smoothness now uses the LINEAR decoder -> residual jitter must be ~0 on a clean
+        # signal (the bug was the MLP fabricating jitter; this guards the fix).
+        assert jr < 5, f"residual jitter {jr:.1f}deg -- smoothness decoder fabricating jitter"
+        # MLP on PCA features must be well-conditioned now (no longer garbage on clean data).
+        assert mm["theta_mae_deg"] < 20, f"MLP(pca) theta {mm['theta_mae_deg']:.1f}deg -- PCA-MLP broken"
         assert {"verdict", "driver", "linear_minus_mlp_gap_deg", "pusher_theta_gain_deg",
-                "jitter_decoded_deg"} <= set(diag)
-        print("SMOKE OK: linear probe decodes clean signal near-perfectly (math correct); "
-              "MLP path + masking + smoothness + diagnosis + 4 plots all run.")
+                "jitter_residual_deg", "jitter_decoded_deg"} <= set(diag)
+        print("SMOKE OK: linear probe near-perfect (math correct); PCA-MLP well-conditioned; "
+              "linear-decoder smoothness residual ~0; masking + diagnosis + 4 plots all run.")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
