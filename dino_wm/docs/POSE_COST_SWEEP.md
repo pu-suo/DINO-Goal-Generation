@@ -204,6 +204,15 @@ original (so the baseline goal set is unchanged). When `rotation_heavy`, it reje
 `angle_diff(state[off,4], state[off+frameskip*goal_H,4]) < min_rot_deg` (block θ = state col 4),
 with an attempt cap that errors clearly if the dataset is rotation-poor.
 
+**(R9) MUST pass `planner.max_iter=10` and an absolute `ckpt_base_path`.** The default
+`planner.max_iter: null` becomes `np.inf` ([planning/mpc.py:41](../planning/mpc.py#L41)); the MPC
+loop only stops on **all-evals-success or iter≥max_iter**, so at any SR<1.0 it runs unbounded AND
+each iter re-rolls the growing `action_so_far` (12h non-termination observed). The validated
+masked-energy floor used `max_iter=10` — omit it and you get neither termination nor comparability.
+Also: plan.py chdir's into `hydra.run.dir` under `@hydra.main`, so the placeholder
+`ckpt_base_path: ./checkpoints` resolves under the run dir — pass an **absolute** path
+(`ckpt_base_path=/workspace/ckpts`, whose `outputs/pusht/hydra.yaml` exists).
+
 ### Reconciled run commands (the actual §5 commands)
 
 ```bash
@@ -214,24 +223,25 @@ cd /workspace/dino_goal/dino_wm && source $WS/activate.sh
 python analysis/pose_decode_probe.py --cache_dir $DATASET_DIR/pusht_noise/qm_latents
 #   -> writes analysis_outputs/pose_decode_probe/linear_decoder.pt
 
+# absolute ckpt path (R9) + planner.max_iter=10 (R9: default null=inf -> never terminates at SR<1).
+CKPT=/workspace/ckpts   # whose outputs/pusht/hydra.yaml exists
+COMMON="--config-name plan_pusht.yaml model_name=pusht ckpt_base_path=$CKPT \
+goal_source=dset seed=99 n_evals=50 goal_H=5 pose_only_success=true \
+mask_pusher=true goal_pusher_perturbation=real planner.max_iter=10"
+
 # 5a. Sanity gate — reproduce the floor (~0.80). If not ~0.80 -> STOP (checkpoint/harness).
-python plan.py --config-name plan_pusht.yaml \
-  model_name=pusht goal_source=dset seed=99 n_evals=50 goal_H=5 \
-  pose_only_success=true mask_pusher=true \
-  cost=masked_l2 cost.alpha=0 goal_pusher_perturbation=real goal_filter=none
+python plan.py $COMMON cost=masked_l2 cost.alpha=0 goal_filter=none \
+  hydra.run.dir=runs/posecost/masked_l2_set-none
 
 # 5b. The sweep (fixed W = probe; sweep lambda_l2; endpoints = pose-only & L2-dominant).
 for L2 in 0.0 0.1 1.0 10.0 1000000.0; do
- for SET in none rotation_heavy; do
-  EXTRA=""; [ "$SET" = rotation_heavy ] && EXTRA="min_rot_deg=45"
-  python plan.py --config-name plan_pusht.yaml \
-    model_name=pusht goal_source=dset seed=99 n_evals=50 goal_H=5 \
-    pose_only_success=true mask_pusher=true \
-    cost=pose_projection cost.lambda_l2=$L2 cost.w_pos=1.0 cost.w_ang=1.0 \
-    goal_pusher_perturbation=real goal_filter=$SET $EXTRA
- done
+  python plan.py $COMMON cost=pose_projection cost.lambda_l2=$L2 cost.w_pos=1.0 cost.w_ang=1.0 \
+    goal_filter=none           hydra.run.dir=runs/posecost/pp_L2-${L2}_set-none
+  python plan.py $COMMON cost=pose_projection cost.lambda_l2=$L2 cost.w_pos=1.0 cost.w_ang=1.0 \
+    goal_filter=rotation_heavy min_rot_deg=45 hydra.run.dir=runs/posecost/pp_L2-${L2}_set-rot
 done
 #   lambda_l2=0.0 = pose-only (old S1); lambda_l2=1e6 ~ L2-only cross-check (re-hit ~0.80).
 #   Then a small w_pos:w_ang sweep ({1:1,1:2,2:1}) at the best lambda_l2.
+#   The 12 runs are INDEPENDENT -> shard across spot 4090s (horizontal parallelism).
 #   SR per run is printed by the evaluator ("Success rate:") and dumped to logs.json in the run dir.
 ```
