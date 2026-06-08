@@ -143,12 +143,16 @@ class PlanWorkspace:
         # the visual L2. Populated in prepare_targets (pusher = state[:, 0:2] for pusht).
         self.mask_pusher = bool(cfg_dict.get("mask_pusher", False))
         self.mask_dilation = int(cfg_dict.get("mask_dilation", 0))
+        # Eval-set selection by required rotation (test-selection only; cost stays deployable).
+        self.goal_filter = str(cfg_dict.get("goal_filter", "none"))
+        self.min_rot_deg = float(cfg_dict.get("min_rot_deg", 45.0))
         self.goal_pusher_xy = None   # pusher actually rendered into obs_g (goal side)
         self.real_pusher_xy = None   # real recorded pusher (rollout-side static proxy)
 
-        objective_fn = hydra.utils.call(
-            cfg_dict["objective"],
-        )
+        # Planning cost: prefer the `cost` group (docs/POSE_COST_SWEEP.md) when present, else
+        # the legacy `objective` block. Both resolve to objective_fn(z_pred, z_tgt, vis_mask).
+        cost_cfg = cfg_dict.get("cost") or cfg_dict.get("objective")
+        objective_fn = hydra.utils.call(cost_cfg)
 
         self.data_preprocessor = Preprocessor(
             action_mean=self.dset.action_mean,
@@ -351,15 +355,44 @@ class PlanWorkspace:
         if len(valid_traj) == 0:
             raise ValueError("No trajectory in the dataset is long enough.")
 
+        # Optional rotation-heavy eval-set selection (test-selection only; cost is untouched).
+        # Reject sampled segments whose |dtheta| (start->goal block angle, state col 4) is below
+        # min_rot_deg. Only meaningful when the window reaches the goal step (dset goal path);
+        # for goal_filter=none the draw sequence below is byte-identical to the original.
+        goal_step = self.frameskip * self.goal_H
+        rot_filter = (self.goal_filter == "rotation_heavy") and (traj_len > goal_step)
+        if self.goal_filter == "rotation_heavy" and not rot_filter:
+            print(f"[goal_filter] rotation_heavy requested but window (traj_len={traj_len}) does "
+                  f"not reach goal_step={goal_step}; skipping (use goal_source=dset).")
+        if rot_filter:
+            from env.pusht.multicolor_common import angle_diff
+            min_rot = np.deg2rad(self.min_rot_deg)
+            max_attempts = max(2000, 400 * self.n_evals)
+            print(f"[goal_filter] rotation_heavy: keeping goals with |dtheta| >= {self.min_rot_deg} deg")
+
         # sample init_states from dset
         for i in range(self.n_evals):
-            max_offset = -1
-            while max_offset < 0:  # filter out traj that are not long enough
+            attempts = 0
+            while True:                       # redraws traj/offset (same draws as the old loop)
+                attempts += 1
                 traj_id = random.randint(0, len(self.dset) - 1)
                 obs, act, state, e_info = self.dset[traj_id]
                 max_offset = obs["visual"].shape[0] - traj_len
-            state = state.numpy()
-            offset = random.randint(0, max_offset)
+                if max_offset < 0:            # too short -> redraw (== old `while max_offset<0`)
+                    continue
+                state = state.numpy()
+                offset = random.randint(0, max_offset)
+                if rot_filter:
+                    dth = angle_diff(float(state[offset, 4]),
+                                     float(state[offset + goal_step, 4]))
+                    if dth < min_rot:
+                        if attempts >= max_attempts:
+                            raise ValueError(
+                                f"goal_filter=rotation_heavy: could not find {self.n_evals} goals "
+                                f"with |dtheta| >= {self.min_rot_deg} deg after {attempts} draws "
+                                f"(eval {i}). Lower min_rot_deg or check the dataset.")
+                        continue
+                break
             obs = {
                 key: arr[offset : offset + traj_len]
                 for key, arr in obs.items()

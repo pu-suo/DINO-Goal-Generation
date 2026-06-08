@@ -1,0 +1,11 @@
+# Projection-metric cost: frozen linear pose decoder + masked-L2 (docs/POSE_COST_SWEEP.md §2).
+# Read by plan.py as cfg.cost; override e.g. cost.lambda_l2=1.0 cost.w_pos=2.0 cost.w_ang=1.0.
+# Pair with mask_pusher=true (the deployable masked-actuator energy the decoder was trained on).
+_target_: planning.pose_projection_cost.create_pose_projection_fn
+decoder_ckpt: analysis_outputs/pose_decode_probe/linear_decoder.pt  # resolved vs repo root
+w_pos: 1.0
+w_ang: 1.0
+lambda_l2: 0.0            # 0 = pose-only (old S1); large (1e6) ~ masked-L2-only cross-check
+pos_tol_px: 20.0         # success gate -> tolerance-normalized term scaling
+ang_tol_deg: 20.0
+normalize_to_tol: true

@@ -1,5 +1,6 @@
 defaults:
   - _self_
+  - cost: masked_l2          # planning cost (read by plan.py as cfg.cost; cost=pose_projection to switch)
   - override hydra/launcher: submitit_slurm
 
 hydra:
@@ -69,6 +70,12 @@ pose_only_success: false         # TEST 2: block-only success (ignore the manipu
 # goal-frame pusher and the real recorded pusher; success criterion is untouched.
 mask_pusher: false               # true -> set CEMPlanner.patch_mask (pusher patches dropped)
 mask_dilation: 0                 # extra rings of neighbour patches to drop (0 = pusher only)
+
+# --- Eval-set selection by required rotation (docs/POSE_COST_SWEEP.md §4 Step 4) -----
+# TEST-SET SELECTION ONLY (cost stays deployable). Filters which dset goals are sampled by
+# the |dtheta| between start and goal block angle (state col 4). none -> unchanged goal set.
+goal_filter: none                # none | rotation_heavy
+min_rot_deg: 45.0                # rotation_heavy keeps goals with |dtheta| >= this (deg)
 
 # --- Planning speed (see docs/PLANNING_SPEED_PROFILE.md) ----------------------
 # fast_encode (default true, RESULT-PRESERVING): cache the start-obs DINOv2 encode

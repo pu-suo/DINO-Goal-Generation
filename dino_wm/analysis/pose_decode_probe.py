@@ -470,6 +470,11 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="analysis_outputs/pose_decode_probe")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--save_decoder", type=int, default=1,
+                    help="1 -> persist the masked LINEAR decoder for the projection-metric "
+                         "planning cost (docs/POSE_COST_SWEEP.md). 0 -> probe only.")
+    ap.add_argument("--decoder_out", default=None,
+                    help="path for linear_decoder.pt (default: <out>/linear_decoder.pt)")
     args = ap.parse_args()
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
     os.makedirs(args.out, exist_ok=True)
@@ -512,6 +517,27 @@ def main():
         if masked:
             pos_ang_masked = pa
         del Xtr_full, Xte
+
+    # --- persist the MASKED linear decoder for the projection-metric planning cost ---
+    # (docs/POSE_COST_SWEEP.md §4 Step 1). This is the SAME decoder that produced the
+    # reported masked-linear metrics above, so the cost inherits the 4.4deg/5.4px guarantee.
+    if args.save_decoder:
+        dec = lin_decoders["masked"]
+        decoder_out = args.decoder_out or str(Path(args.out) / "linear_decoder.pt")
+        torch.save({
+            "mu": dec["mu"].squeeze(0).contiguous(),    # (196*384,) per-dim input mean
+            "sd": dec["sd"].squeeze(0).contiguous(),    # (196*384,) per-dim input std
+            "W": dec["W"].contiguous(),                 # (196*384, 4) primal weights
+            "ymu": dec["ymu"].squeeze(0).contiguous(),  # (4,) target mean (intercept)
+            "n_tokens": N_TOKENS, "emb": EMB, "dilation": args.dilation, "masked": True,
+            "pose_param": ["x_px", "y_px", "cos", "sin"],   # decode order; angle=atan2(out[3],out[2])
+            "prep": ("mask (zero pusher patches via manipulator_energy_mask, dilation as recorded) "
+                     "-> reshape(B, 196*384) row-major -> standardize (x-mu)/sd per-dim "
+                     "-> @W + ymu  => [x_px, y_px, cos, sin]"),
+            "metrics": metrics["masked"]["ridge"],
+        }, decoder_out)
+        print(f"[decoder] saved masked linear pose decoder -> {decoder_out} "
+              f"(W {tuple(dec['W'].shape)}, dilation={args.dilation})")
 
     print("\n[control 3] smoothness on held-out trajectories (masked, linear decoder):")
     jit = smoothness(lin_decoders["masked"], latents, states, te_slices, args.dilation,

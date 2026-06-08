@@ -1,0 +1,7 @@
+# Committed masked-L2 floor energy (the 0.80 term). Read by plan.py as cfg.cost.
+# Identical to the legacy `objective:` block (create_objective_fn). The FLOOR is this with
+# cost.alpha=0 + mask_pusher=true (drops the proprio/pusher term and masks the pusher patches).
+_target_: planning.objectives.create_objective_fn
+alpha: 1
+base: 2
+mode: last
