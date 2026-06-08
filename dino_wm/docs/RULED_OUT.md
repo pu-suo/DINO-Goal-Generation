@@ -52,9 +52,19 @@ path is untouched.
 trajectory-latent cache script (renamed `scripts/cache_qm_latents.py` →
 `scripts/cache_traj_latents.py`) which the pose-decode probe consumes.
 
-**Follow-up — masked-DINO pose-decode probe outcome:** _(to be appended once the probe is
-run on the box — see docs/POSE_DECODE_PROBE.md)_
-- masked orientation MAE: _TBD_ ; verdict: _TBD (g_viable / borderline / representation_ceiling)_
-- If the probe shows the masked latent's own orientation noise exceeds the 20° gate, it
-  **confirms** the quasimetric was doomed by the representation, and a higher-resolution
-  representation (e.g. V-JEPA-2-AC) is on the critical path before `g`.
+**Follow-up — masked-DINO pose-decode probe outcome (RAN 2026-06, pusht_noise, 6000 trajs,
+16k train / 8k test frames, whole-traj split):** verdict = **g_viable**. The masked latent
+DECODES pose cleanly, so the quasimetric's failure was SEARCH/VALUE-fitting, NOT the
+representation — confirming hypothesis (A), refuting (B).
+- masked orientation MAE: **linear 4.4° (median 2.4°)**, MLP 5.1° — 97% of frames < 20°.
+- masked position: **5.4px L2 (median 3.6)** — 97% < 20px; "both gates" satisfied on **96%** of
+  frames (a decodability ceiling ABOVE the 0.80 masked-L2 floor; the planning-SR gap is the
+  planner/dynamics, not the latent).
+- ACCESS: linear ≈ MLP -> pose is CLEANLY LINEARLY accessible (a simple `g` head suffices).
+- PUSHER: unmasked − masked = +0.0° -> the object-only latent carries pose on its own; masking
+  the pusher costs ~no pose info (validates the masked-energy design).
+- SMOOTHNESS: residual jitter 3.2° (« the ~9°/step true rotation) -> NO pathological jittery
+  fine-pose. The jitter the quasimetric inherited is in the VALUE FIT, not the representation.
+- => Representation is NOT the bottleneck; build `g` on this latent (Phase 1). Remaining risk
+  shifts to `g`'s synthesis + CEM control, not the latent. (Decode transfers to multicolor —
+  same frozen DINOv2 — but the multicolor oracle SR ≥0.80 held-out is still a separate measure.)
