@@ -267,9 +267,14 @@ def main():
          f"  beats retrieval: {fid['g_changed_cos']:.3f} vs {fid['retrieval_changed_cos']:.3f} -> "
          f"{'yes' if fid['g_changed_cos'] > fid['retrieval_changed_cos'] else 'NO (g ~ nearest-neighbor)'}"]
     ts = out["text_sensitivity"]
-    L += [f"  text load-bearing (swapped collapses to floor): {ts['correct_changed_cos']:.3f} -> "
-          f"{ts['swapped_changed_cos']:.3f} (identity floor {ts['identity_changed_cos']:.3f}) -> "
-          f"{'yes' if ts['swapped_changed_cos'] < 0.5*(ts['correct_changed_cos']+ts['identity_changed_cos']) else 'WEAK'}"]
+    drop = ts["correct_changed_cos"] - ts["swapped_changed_cos"]
+    # NOTE: a CORRECTLY-grounded g(swapped) shares the origin-erasure with the named goal and only
+    # differs on the T-arrival patches, so it lands BETWEEN the floor and correct -- NOT at the floor.
+    # The drop's SIGN confirms text is used; its magnitude is confounded by target geometry. The crisp
+    # which-target grounding comes from a multicolor-refit pose decoder (B1/B2), not this number.
+    L += [f"  text used (g(correct) {ts['correct_changed_cos']:.3f} -> g(swapped) {ts['swapped_changed_cos']:.3f}, "
+          f"drop {drop:.3f} {'>0 yes' if drop > 0 else '<=0 NO'}); "
+          f"crisp grounding needs a multicolor pose decoder (analysis/fit_multicolor_pose_decoder.py)"]
     if "grounding" in out:
         gr = out["grounding"]
         if gr["decoder_trustworthy"]:
