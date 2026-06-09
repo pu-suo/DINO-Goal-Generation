@@ -180,6 +180,12 @@ class Trainer:
                 os.makedirs("checkpoints")
             ckpt = {}
             for k in self._keys_to_save:
+                if k not in self.__dict__:
+                    # e.g. has_decoder=false but train_decoder left True -> decoder_optimizer
+                    # is in _keys_to_save yet was never built. Warn + skip so a long run
+                    # still checkpoints instead of dying in save_ckpt after hours of compute.
+                    log.warning("save_ckpt: %r in _keys_to_save but not set; skipping", k)
+                    continue
                 if hasattr(self.__dict__[k], "module"):
                     ckpt[k] = self.accelerator.unwrap_model(self.__dict__[k])
                 else:
