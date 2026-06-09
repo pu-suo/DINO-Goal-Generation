@@ -100,11 +100,19 @@ class MPCPlanner(BasePlanner):
                 obs_0=init_obs_0,
                 state_0=init_state_0,
             )
+            # Per-iteration MPC eval is DIAGNOSTIC only: successes / e_obses / e_states are
+            # computed before any plotting (evaluator._compute_rollout_metrics), and the final
+            # result is rendered once by perform_planning's final eval. plot/save_video here
+            # would VQ-VAE-decode + MP4-encode the FULL `action_so_far`, which GROWS by
+            # n_taken_actions every MPC iter -> a per-iter cost that balloons on later iters
+            # (and the decode drives the ~20GB peak). Disabling it is SR-neutral (the decoder
+            # is RNG-free; nothing here feeds the planned actions). See docs/POSE_COST_SWEEP.md.
             logs, successes, e_obses, e_states = self.evaluator.eval_actions(
                 action_so_far,
                 self.action_len,
                 filename=f"plan{self.iter}",
-                save_video=True,
+                save_video=False,
+                plot=False,
             )
             new_successes = successes & ~self.is_success  # Identify new successes
             self.is_success = (

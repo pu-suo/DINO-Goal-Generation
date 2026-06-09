@@ -33,7 +33,8 @@ objective:
 
 planner:
   _target_: planning.mpc.MPCPlanner
-  max_iter: null
+  max_iter: 10   # WAS null -> np.inf (mpc.py:41): never terminates at SR<1.0 (re-rolls a growing
+                 # action seq each round). The validated runs used 10.
   n_taken_actions: 5
   sub_planner:
     target: planning.cem.CEMPlanner
