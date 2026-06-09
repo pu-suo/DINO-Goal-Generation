@@ -43,7 +43,9 @@ objective:
 
 planner:
   _target_: planning.mpc.MPCPlanner
-  max_iter: null 
+  max_iter: 10   # MPC replanning rounds. WAS null -> np.inf (mpc.py:41): the loop only stops on
+                 # all-evals-success OR iter>=max_iter, so at SR<1.0 it NEVER terminates and re-rolls
+                 # a growing action seq each round. The validated masked-energy floor used 10.
   n_taken_actions: 5
   sub_planner:
     target: planning.cem.CEMPlanner
