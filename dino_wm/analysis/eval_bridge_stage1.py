@@ -170,7 +170,26 @@ def main():
                         "g_full_cos": float(cos_full.mean()), "g_full_l2": float(l2.mean()),
                         "identity_changed_cos": id_micro, "retrieval_changed_cos": re_micro}}
 
-    # --- B. grounding via pose decoder (optional) ---
+    # --- A2. text sensitivity (DECODER-FREE grounding): name a DIFFERENT color -> g's goal should
+    # move AWAY from the named-target goal (cosine collapses toward the identity floor). This proves
+    # text is load-bearing without depending on the pose decoder transferring to multicolor. ---
+    active = np.array([int(labels[i]["active_idx"]) for i in range(n)])
+    n_targets = len(labels[0]["target_colors"])
+    swapped_idx = (active + 1) % n_targets
+    sw_instr = [render_instruction(labels[i]["target_colors"][swapped_idx[i]],
+                                   int(labels[i]["template_id"])) for i in range(n)]
+    with torch.no_grad():
+        stk, smk = encode_texts(sw_instr, encoder, device)
+        z_sw = g(z_start, stk, smk)
+    sw_cos_ch, sw_nchg, _, _ = fidelity(z_sw, z_goal, z_start, tau)            # swapped g vs NAMED goal
+    sw_micro = micro_changed_cos(sw_cos_ch, sw_nchg)
+    print("\n[A2] TEXT SENSITIVITY (decoder-free): cosine of g's goal to the NAMED-target goal:")
+    print(f"  correct text {g_micro:.4f}  ->  swapped color {sw_micro:.4f}   (identity floor {id_micro:.4f})")
+    print(f"  -> drop {g_micro - sw_micro:.3f}; swapped near the {id_micro:.3f} floor = text fully load-bearing")
+    out["text_sensitivity"] = {"correct_changed_cos": g_micro, "swapped_changed_cos": sw_micro,
+                               "identity_changed_cos": id_micro}
+
+    # --- B. grounding via pose decoder (optional; needs a decoder that transfers to multicolor) ---
     if os.path.exists(args.pose_decoder):
         dec = load_pose_decoder(args.pose_decoder, device)
         pusher = np.stack([np.asarray(labels[i]["init_state"], dtype=np.float64)[:2] for i in range(n)])
@@ -199,15 +218,8 @@ def main():
         print(f"[B1] g grounding vs NAMED target: pos {pos.mean():.1f}px (med {pos.median():.1f}) "
               f"ang {ang.mean():.1f}deg (med {ang.median():.1f}) | within-gate {within:.2f}")
 
-        # B2: swapped-text -> does g move to the SWAPPED target?
+        # B2: swapped-text -> does g move to the SWAPPED target? (reuses z_sw / swapped_idx from A2)
         tpos = np.stack([np.asarray(labels[i]["target_poses"], dtype=np.float64) for i in range(n)])  # (N,K,3)
-        active = np.array([int(labels[i]["active_idx"]) for i in range(n)])
-        swapped_idx = np.array([(active[i] + 1) % tpos.shape[1] for i in range(n)])
-        sw_colors = [labels[i]["target_colors"][swapped_idx[i]] for i in range(n)]
-        sw_instr = [render_instruction(sw_colors[i], int(labels[i]["template_id"])) for i in range(n)]
-        with torch.no_grad():
-            stk, smk = encode_texts(sw_instr, encoder, device)
-            z_sw = g(z_start, stk, smk)
         sx, sy, _ = decode_pose(z_sw, pusher, dec, device)
         sxy = torch.stack([sx, sy], 1)
         named_xy = torch.tensor(tpos[np.arange(n), active, :2], device=device)
@@ -254,6 +266,10 @@ def main():
          f"{'PASS' if gate_fid else 'BELOW'}",
          f"  beats retrieval: {fid['g_changed_cos']:.3f} vs {fid['retrieval_changed_cos']:.3f} -> "
          f"{'yes' if fid['g_changed_cos'] > fid['retrieval_changed_cos'] else 'NO (g ~ nearest-neighbor)'}"]
+    ts = out["text_sensitivity"]
+    L += [f"  text load-bearing (swapped collapses to floor): {ts['correct_changed_cos']:.3f} -> "
+          f"{ts['swapped_changed_cos']:.3f} (identity floor {ts['identity_changed_cos']:.3f}) -> "
+          f"{'yes' if ts['swapped_changed_cos'] < 0.5*(ts['correct_changed_cos']+ts['identity_changed_cos']) else 'WEAK'}"]
     if "grounding" in out:
         gr = out["grounding"]
         if gr["decoder_trustworthy"]:

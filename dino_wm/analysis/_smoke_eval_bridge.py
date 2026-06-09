@@ -51,6 +51,8 @@ def main():
     for k in ("g_changed_cos", "g_changed_cos_macro", "n_zero_changed", "identity_changed_cos",
               "retrieval_changed_cos", "g_full_cos", "g_full_l2"):
         assert k in rep["fidelity"], f"missing fidelity.{k}"
+    for k in ("correct_changed_cos", "swapped_changed_cos", "identity_changed_cos"):
+        assert k in rep["text_sensitivity"], f"missing text_sensitivity.{k}"
     for k in ("decoder_trustworthy", "transfer_within_gate", "named_within_gate",
               "swapped_follows_swapped", "swapped_moved_to_swapped", "named_pos_mae_px",
               "agnostic_pos_mae_px"):
