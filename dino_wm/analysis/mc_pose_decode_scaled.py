@@ -77,8 +77,18 @@ def main():
     ap.add_argument("--ridge_lambda", type=float, default=10.0)
     ap.add_argument("--dilation", type=int, default=0)
     ap.add_argument("--fit_device", default="cuda")
-    ap.add_argument("--out", default="analysis_outputs/pose_decode_probe/mc_decode_scaled.json")
+    ap.add_argument("--no_mask", action="store_true",
+                    help="skip pusher masking (mid-push the pusher abuts the block, so the mask "
+                         "deletes block-adjacent patches -- a confound unique to mid-traj frames)")
+    ap.add_argument("--latent_cache", default="analysis_outputs/pose_decode_probe/mc_frame_latents.pt",
+                    help="save/reuse the encoded frame latents (encode once, refit many)")
+    ap.add_argument("--selfcheck", action="store_true",
+                    help="cosine-compare fresh frame-0 encodes vs the standing cached start latents")
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    if args.out is None:
+        args.out = ("analysis_outputs/pose_decode_probe/mc_decode_scaled"
+                    + ("_nomask" if args.no_mask else "") + ".json")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     encoder = DinoV2Encoder(name="dinov2_vits14", feature_key="x_norm_patchtokens").to(device).eval()
@@ -87,26 +97,55 @@ def main():
     tfm = default_transform(224)
     rng = np.random.RandomState(0)
 
-    print("== encoding sampled frames (train fit set / test frame-eval set) ==")
-    tr = PushTMultiColorDataset(data_path=os.path.join(args.data_path, "train"),
-                                transform=tfm, normalize_action=False, with_velocity=True)
-    te = PushTMultiColorDataset(data_path=os.path.join(args.data_path, "test"),
-                                transform=tfm, normalize_action=False, with_velocity=True)
-    Ztr, Ptr, PUtr = encode_split(tr, args.per_ep_train, encoder, enc_resize, device, args.batch, rng)
-    Zte, Pte, PUte = encode_split(te, args.per_ep_test, encoder, enc_resize, device, args.batch, rng)
-    print(f"encoded: train {tuple(Ztr.shape)}  test {tuple(Zte.shape)}")
+    if args.latent_cache and os.path.exists(args.latent_cache):
+        print(f"== loading cached frame latents from {args.latent_cache} ==")
+        c = torch.load(args.latent_cache)
+        Ztr, Ptr, PUtr = c["Ztr"].float(), c["Ptr"], c["PUtr"]
+        Zte, Pte, PUte = c["Zte"].float(), c["Pte"], c["PUte"]
+    else:
+        print("== encoding sampled frames (train fit set / test frame-eval set) ==")
+        tr = PushTMultiColorDataset(data_path=os.path.join(args.data_path, "train"),
+                                    transform=tfm, normalize_action=False, with_velocity=True)
+        te = PushTMultiColorDataset(data_path=os.path.join(args.data_path, "test"),
+                                    transform=tfm, normalize_action=False, with_velocity=True)
+        Ztr, Ptr, PUtr = encode_split(tr, args.per_ep_train, encoder, enc_resize, device, args.batch, rng)
+        Zte, Pte, PUte = encode_split(te, args.per_ep_test, encoder, enc_resize, device, args.batch, rng)
+        print(f"encoded: train {tuple(Ztr.shape)}  test {tuple(Zte.shape)}")
+        if args.latent_cache:
+            torch.save({"Ztr": Ztr.half(), "Ptr": Ptr, "PUtr": PUtr,
+                        "Zte": Zte.half(), "Pte": Pte, "PUte": PUte}, args.latent_cache)
+            print(f"cached -> {args.latent_cache}")
+
+    if args.selfcheck:
+        print("== selfcheck: fresh frame-0 encodes vs cached start latents (expect cos ~1.0) ==")
+        tr0 = PushTMultiColorDataset(data_path=os.path.join(args.data_path, "train"),
+                                     transform=tfm, normalize_action=False, with_velocity=True)
+        cached = torch.load(os.path.join(args.latent_dir, "train", "start_latents.pth"))
+        idxs = list(range(0, 100))
+        frames0 = torch.stack([tr0.get_frames(i, [0])[0]["visual"][0] for i in idxs])
+        with torch.no_grad():
+            z0 = encoder.forward(enc_resize(frames0.to(device))).cpu()
+        cos = torch.nn.functional.cosine_similarity(
+            z0.reshape(len(idxs), -1), cached[idxs].reshape(len(idxs), -1), dim=-1)
+        print(f"  cos(fresh frame-0, cached start): mean {cos.mean():.4f}  min {cos.min():.4f}")
+
     del encoder
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    Xtr, Xte = masked_flat(Ztr, PUtr, args.dilation), masked_flat(Zte, PUte, args.dilation)
+    if args.no_mask:
+        flat = lambda z, pu: z.float().reshape(z.shape[0], -1)
+        print("== NO pusher masking (plain flatten) ==")
+    else:
+        flat = lambda z, pu: masked_flat(z, pu, args.dilation)
+    Xtr, Xte = flat(Ztr, PUtr), flat(Zte, PUte)
     del Ztr, Zte
     Ytr, Yte = pose4(Ptr), pose4(Pte)
 
     # the standing test-split goal/start latents (the quantities g/planning care about)
     lg = PushTMultiColorLatentGoalDataset(args.latent_dir, args.data_path, "test")
     pu = pusher_xy(lg)
-    Ggoal, Gstart = masked_flat(lg.goal, pu, args.dilation), masked_flat(lg.start, pu, args.dilation)
+    Ggoal, Gstart = flat(lg.goal, pu), flat(lg.start, pu)
     Ygoal, Ystart = pose4(goal_pose(lg)), pose4(start_pose(lg))
 
     out = {}
@@ -115,6 +154,8 @@ def main():
         if n > len(Xtr):
             break
         sub = order[:n]
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         _, dec = fit_linear(Xtr[sub], Ytr[sub], Xte[:1], args.ridge_lambda, args.fit_device)
         out[f"frames{n}_test_frames"] = metrics(apply_dec(dec, Xte), Yte)
         out[f"frames{n}_test_goals"] = metrics(apply_dec(dec, Ggoal), Ygoal)
