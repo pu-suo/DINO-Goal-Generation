@@ -31,7 +31,7 @@ from pathlib import Path
 
 import custom_resolvers  # noqa: F401  (registers ${replace_slash})
 from env.venv import SubprocVectorEnv
-from utils import seed
+from utils import seed, move_to_device
 from planning.mpc import MPCPlanner
 from env.pusht.multicolor_common import pusher_patch_mask, contact_pusher_pose
 from env.pusht import multicolor_sampler as mcs
@@ -53,19 +53,16 @@ class MultiColorPlanWorkspace(PlanWorkspace):
             target = self.planner.sub_planner if isinstance(self.planner, MPCPlanner) else self.planner
             target.patch_mask = masks
             print(f"[mask] dropped {int((masks[0] == 0).sum())} pusher patches/eval from the energy")
+        if cfg_dict["goal_source"] == "bridge":
+            # Stage-2: replace the planner's goal latent with g(z_start, instruction).
+            # Must run AFTER the planner exists (same post-construction pattern as the
+            # manipulator mask above).
+            self._attach_bridge_goal()
 
-    def prepare_targets(self):
-        # Real-goal CONTROL. When goal_source != "named_target", plan toward a REAL
-        # reachable multicolor goal -- a real trajectory's endpoint, so block AND
-        # pusher sit in a physically-consistent pose -- with the standard alpha=1
-        # energy (PlanWorkspace's dset/random_state path). This isolates the
-        # dynamics model from the FABRICATED named-target goal:
-        #   SR_control >> SR_named  => the cap is our goal construction (pusher
-        #                              placement), model is fine -> fix the oracle.
-        #   SR_control ~ SR_named   => the model itself is the limit -> rollout-aware
-        #                              retraining is the real lever.
-        if self.goal_source != "named_target":
-            return super().prepare_targets()
+    def _sample_oracle_layouts(self):
+        """Decorrelated, split-aware layouts + init/goal states (block -> named target).
+        Shared by the named_target oracle and the Stage-2 bridge path; the goal-frame
+        PUSHER placement stays with each caller."""
         mc = self.mc
         train_combos, test_combos = mcs.make_combo_split(
             mc["n_targets"], mc["n_bins"], mc["heldout_frac"], mc["split_seed"])
@@ -87,7 +84,7 @@ class MultiColorPlanWorkspace(PlanWorkspace):
         self.layouts = layouts
         self.instructions = [l["instruction"] for l in layouts]
         self.active_colors = [l["active_color"] for l in layouts]
-        print(f"[oracle] {self.n_evals} evals | combo_split={mc['combo_split']} | "
+        print(f"[{self.goal_source}] {self.n_evals} evals | combo_split={mc['combo_split']} | "
               f"example: \"{layouts[0]['instruction']}\"")
 
         # install the N decals on each env worker (via the update_env dispatch)
@@ -96,6 +93,24 @@ class MultiColorPlanWorkspace(PlanWorkspace):
         goal_states = init_states.copy()
         for i, l in enumerate(layouts):
             goal_states[i, 2:5] = l["goal_pose"]  # block -> named target
+        return layouts, init_states, goal_states
+
+    def prepare_targets(self):
+        # Real-goal CONTROL. When goal_source != "named_target", plan toward a REAL
+        # reachable multicolor goal -- a real trajectory's endpoint, so block AND
+        # pusher sit in a physically-consistent pose -- with the standard alpha=1
+        # energy (PlanWorkspace's dset/random_state path). This isolates the
+        # dynamics model from the FABRICATED named-target goal:
+        #   SR_control >> SR_named  => the cap is our goal construction (pusher
+        #                              placement), model is fine -> fix the oracle.
+        #   SR_control ~ SR_named   => the model itself is the limit -> rollout-aware
+        #                              retraining is the real lever.
+        if self.goal_source == "bridge":
+            return self._prepare_targets_bridge()
+        if self.goal_source != "named_target":
+            return super().prepare_targets()
+        mc = self.mc
+        layouts, init_states, goal_states = self._sample_oracle_layouts()
 
         # Where to put the pusher in the oracle goal. The pusher's true goal-time
         # pose is unknown, and the choice interacts with objective.alpha (the
@@ -141,10 +156,101 @@ class MultiColorPlanWorkspace(PlanWorkspace):
         self.state_g = state_g
         self.gt_actions = None
 
+    def _prepare_targets_bridge(self):
+        """Stage-2: the goal is g(z_start, instruction) -- no goal image exists.
+
+        Same decorrelated layouts/success target as the named_target oracle, but the
+        goal-frame pusher stays at its START pose: that is g's training convention
+        (the cached goal frames keep the pusher at init), so it is both where g
+        leaves the pusher in the synthesized latent and the right patches for the
+        manipulator mask to drop. obs_g is rendered ONLY as (a) the evaluator's plot
+        reference and (b) the proprio entry of the goal dict; the planner's VISUAL
+        target is replaced by g's output in _attach_bridge_goal (z_obs_g_override).
+        Success stays the env pose check of the block vs the NAMED target.
+        """
+        _, init_states, goal_states = self._sample_oracle_layouts()
+        # goal_states pusher cols [0:2] are already the start pusher (copied from
+        # init_states); only the block was moved to the named target.
+        obs_0, state_0 = self.env.prepare(self.eval_seed, init_states)
+        obs_g, state_g = self.env.prepare(self.eval_seed, goal_states)
+        self.obs_0 = {k: np.expand_dims(v, axis=1) for k, v in obs_0.items()}
+        self.obs_g = {k: np.expand_dims(v, axis=1) for k, v in obs_g.items()}
+        self.state_0 = state_0
+        self.state_g = state_g
+        self.gt_actions = None
+
+    def _attach_bridge_goal(self):
+        """Compute z_goal = g(z_start, instruction) and override the CEM goal latent.
+
+        Runs after the planner exists. The override dict mirrors wm.encode_obs's
+        output: visual <- g's synthesized grid; proprio <- the rendered placeholder's
+        encoding (inert under the deployable alpha=0 energy, shape-consistent
+        otherwise). Loud failure beats silent oracle: if anything here breaks we
+        raise, because falling back to enc(obs_g) would silently run the ORACLE."""
+        from hydra.utils import to_absolute_path
+        from models.bridge import BridgeG, FrozenTextEncoder
+
+        ckpt_rel = self.mc.get("bridge_ckpt")
+        if not ckpt_rel:
+            raise ValueError("goal_source=bridge requires multicolor.bridge_ckpt")
+        ckpt_path = to_absolute_path(ckpt_rel)  # resolved vs the LAUNCH cwd (hydra original dir)
+        ck = torch.load(ckpt_path, map_location=self.device)
+        c = ck["config"]
+        g = BridgeG(dim=c["dim"], depth=c["depth"], heads=c["heads"], d_text=c["d_text"]).to(self.device)
+        g.load_state_dict(ck["state_dict"])
+        g.eval()
+        # text_model=None means the ckpt was trained with --dummy_text (deterministic random
+        # tokens): real MiniLM tokens are shape-compatible but statistically unrelated, so
+        # planning would silently produce garbage goals. Refuse. (A genuinely MISSING key =
+        # legacy ckpt -> MiniLM default, stated loudly.)
+        if "text_model" in ck and ck["text_model"] is None:
+            raise ValueError(f"{ckpt_path} was trained with --dummy_text (text_model=None); "
+                             f"refusing to plan with a real text encoder")
+        text_model = ck.get("text_model", "sentence-transformers/all-MiniLM-L6-v2")
+        text_enc = FrozenTextEncoder(text_model, max_len=c.get("text_max_len", 16), device="cpu")
+        print(f"[bridge] text encoder: {text_model} (max_len={c.get('text_max_len', 16)})")
+        tok, tmask = text_enc(self.instructions)
+
+        trans_obs_0 = move_to_device(self.data_preprocessor.transform_obs(self.obs_0), self.device)
+        trans_obs_g = move_to_device(self.data_preprocessor.transform_obs(self.obs_g), self.device)
+        with torch.no_grad():
+            z0 = self.wm.encode_obs(trans_obs_0)
+            zg = self.wm.encode_obs(trans_obs_g)          # placeholder: proprio + plots
+            z_goal_vis = g(z0["visual"][:, 0],            # (B,196,384)
+                           tok.to(self.device), tmask.to(self.device))
+        ref_cos = torch.nn.functional.cosine_similarity(
+            z_goal_vis.reshape(self.n_evals, -1),
+            zg["visual"][:, 0].reshape(self.n_evals, -1), dim=-1)
+        zg["visual"] = z_goal_vis.unsqueeze(1).to(zg["visual"].dtype)
+
+        target = self.planner.sub_planner if isinstance(self.planner, MPCPlanner) else self.planner
+        if not hasattr(target, "z_obs_g_override"):
+            # e.g. the GD planner: it would silently encode the placeholder obs_g and
+            # run the ORACLE while reporting bridge results.
+            raise TypeError(f"goal_source=bridge requires a planner that consumes "
+                            f"z_obs_g_override (CEMPlanner declares it in __init__); got "
+                            f"{type(target).__name__}")
+        target.z_obs_g_override = zg
+        cost_cfg = self.cfg_dict.get("cost") or self.cfg_dict.get("objective") or {}
+        alpha = cost_cfg.get("alpha")
+        print(f"[bridge] z_obs_g_override attached from {ckpt_path} | "
+              f"cos(g_goal, rendered-ref) mean={ref_cos.mean():.3f} min={ref_cos.min():.3f}")
+        if alpha is not None and alpha not in (0, 0.0):
+            print(f"[bridge] WARN: alpha={alpha} != 0 scores the proprio term against a "
+                  f"fabricated start-pose pusher; the deployable energy is alpha=0 + "
+                  f"multicolor.use_manipulator_mask=true")
+
 
 def planning_main_mc(cfg_dict):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     mc = cfg_dict["multicolor"]
+    # Fail fast on a missing bridge ckpt BEFORE spinning up envs / loading the model.
+    if cfg_dict["goal_source"] == "bridge":
+        from hydra.utils import to_absolute_path
+        _p = mc.get("bridge_ckpt")
+        if not _p or not os.path.exists(to_absolute_path(_p)):
+            raise FileNotFoundError(
+                f"goal_source=bridge requires an existing multicolor.bridge_ckpt (got {_p!r})")
     model_path = f"{cfg_dict['ckpt_base_path']}/outputs/{cfg_dict['model_name']}/"
     model_cfg = OmegaConf.load(os.path.join(model_path, "hydra.yaml"))
     seed(cfg_dict["seed"])
@@ -184,8 +290,9 @@ def planning_main_mc(cfg_dict):
     ws = MultiColorPlanWorkspace(cfg_dict, model, dset, env, model_cfg.frameskip, wandb_run=None)
     logs = ws.perform_planning()
     headline = {k: v for k, v in logs.items() if any(s in k for s in ("success", "coverage"))}
-    print("\n=== ORACLE RESULT ===")
-    print(f"combo_split={mc['combo_split']} masked={mc['use_manipulator_mask']}")
+    print(f"\n=== {cfg_dict['goal_source'].upper()} RESULT ===")
+    print(f"goal_source={cfg_dict['goal_source']} combo_split={mc['combo_split']} "
+          f"masked={mc['use_manipulator_mask']}")
     print(headline)
     return logs
 

@@ -48,15 +48,15 @@ def load_g(ckpt_path, device):
     g = BridgeG(dim=c["dim"], depth=c["depth"], heads=c["heads"], d_text=c["d_text"]).to(device)
     g.load_state_dict(ck["state_dict"])
     g.eval()
-    return g, ck.get("tau", None), ck.get("text_model", None)
+    return g, ck.get("tau", None), ck.get("text_model", None), c.get("text_max_len", 16)
 
 
-def build_text_encoder(text_model, dummy, width, device):
+def build_text_encoder(text_model, dummy, width, device, text_max_len=16):
     if dummy or text_model is None:
         from train_bridge import DummyTextEncoder
         return DummyTextEncoder(d_text=width)
     from models.bridge import FrozenTextEncoder
-    return FrozenTextEncoder(text_model, device=device)
+    return FrozenTextEncoder(text_model, max_len=text_max_len, device=device)
 
 
 def encode_texts(texts, encoder, device):
@@ -131,9 +131,9 @@ def main():
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
     os.makedirs(args.out, exist_ok=True)
 
-    g, tau, text_model = load_g(args.ckpt, device)
+    g, tau, text_model, text_max_len = load_g(args.ckpt, device)
     assert tau is not None, "ckpt missing 'tau' -- was it written by train_bridge.py?"
-    encoder = build_text_encoder(text_model, args.dummy_text, g.dim, device)
+    encoder = build_text_encoder(text_model, args.dummy_text, g.dim, device, text_max_len)
     dset = PushTMultiColorLatentGoalDataset(args.latent_dir, args.data_path, args.split)
     n = len(dset)
     z_start = dset.start.to(device)

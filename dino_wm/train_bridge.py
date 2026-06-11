@@ -182,7 +182,8 @@ def main():
             print(f"  epoch {epoch:4d}: train {train_loss:.4f} | val {val_loss:.4f} "
                   f"| changed-cos {val_cos:.4f}  (Stage-1 gate >= 0.90)")
         ckpt = {"state_dict": g.state_dict(), "tau": tau, "lam": args.lam,
-                "config": {"dim": args.width, "depth": args.depth, "heads": args.heads, "d_text": d_text},
+                "config": {"dim": args.width, "depth": args.depth, "heads": args.heads,
+                           "d_text": d_text, "text_max_len": args.text_max_len},
                 "text_model": (None if args.dummy_text else args.text_model),
                 "epoch": epoch, "val_loss": val_loss, "val_changed_cos": val_cos}
         if val_cos > best_cos:

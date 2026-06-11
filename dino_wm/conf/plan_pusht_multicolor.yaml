@@ -3,7 +3,7 @@ defaults:
 
 hydra:
   run:
-    dir: plan_outputs/${now:%Y%m%d%H%M%S}_multicolor_${model_name}_${multicolor.combo_split}${multicolor.mask_tag}
+    dir: plan_outputs/${now:%Y%m%d%H%M%S}_multicolor_${model_name}_${multicolor.combo_split}_${goal_source}${multicolor.mask_tag}
 
 # --- model: shipped PushT dynamics (frozen) reused in the multi-color env ------
 ckpt_base_path: ./checkpoints      # ${ckpt_base_path}/outputs/<model_name>
@@ -88,3 +88,6 @@ multicolor:
   mask_tag: ""                      # set to e.g. _masked for the run dir name
   layout_seed_base: 5000000
   stats_source: model               # 'model' = pusht_noise norm (shipped dynamics)
+  bridge_ckpt: null                 # Stage-2: BridgeG ckpt for goal_source=bridge
+                                    # (e.g. outputs/bridge/g0/g_best.pth; resolved vs the LAUNCH
+                                    # cwd -- hydra original dir; prefer an absolute path)

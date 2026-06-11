@@ -43,6 +43,12 @@ class CEMPlanner(BasePlanner):
         # optional (n_evals, P) manipulator-masked energy; set by the multi-color
         # planning workspace. None -> stock full-grid energy (unchanged behavior).
         self.patch_mask = None
+        # optional precomputed goal latents for Stage-2 bridge planning (z_goal =
+        # g(z_start, text); no goal IMAGE exists, so obs_g is a placeholder render).
+        # Same structure as wm.encode_obs's output: {"visual": (B,1,196,384),
+        # "proprio": (B,1,...)}. Set by the multi-color planning workspace AFTER
+        # construction (same pattern as patch_mask). None -> stock (encode obs_g).
+        self.z_obs_g_override = None
         # Speed knob (default ON, result-preserving): encode the start obs ONCE and
         # roll out from the cached latent instead of re-encoding it for every CEM
         # candidate every opt-step. The frozen encoder is RNG-free, so this does not
@@ -109,7 +115,10 @@ class CEMPlanner(BasePlanner):
         # RNG-free, so this is identical to encoding inside the loop -- it just stops
         # the inner loop from re-running DINOv2 on the same frame for every candidate.
         with torch.no_grad():
-            z_obs_g = self.wm.encode_obs(trans_obs_g)
+            if self.z_obs_g_override is not None:
+                z_obs_g = self.z_obs_g_override  # Stage-2 bridge goal (covers _plan_fast too)
+            else:
+                z_obs_g = self.wm.encode_obs(trans_obs_g)
             z_obs_0 = self.wm.encode_obs(trans_obs_0) if self.fast_encode else None
 
         mu, sigma = self.init_mu_sigma(obs_0, actions)
