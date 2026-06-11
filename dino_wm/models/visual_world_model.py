@@ -205,13 +205,38 @@ class VWorldModel(nn.Module):
                 visual_pred: (b, num_hist, 3, img_size, img_size)
                 visual_reconstructed: (b, num_frames, 3, img_size, img_size)
         """
+        z = self.encode(obs, act)
+        return self._loss_from_z(z, obs['visual'])
+
+    def forward_latent(self, z_visual, proprio, act):
+        """Cached-latent training path: identical to forward() but the frozen-encoder
+        visual tokens are supplied PRE-ENCODED (z_visual, the byte-for-byte output of
+        encode_obs()['visual']), so the DINOv2 forward + mp4 decode are skipped. The
+        trained proprio/action encoders still run live. Predictor-only (no decoder):
+        the decoder branches in _loss_from_z need the raw image and are unreachable
+        here. Equivalence with forward() is covered by tests/test_forward_latent_equiv.py.
+
+        z_visual: (b, num_frames, num_patches, emb_dim)
+        proprio:  (b, num_frames, proprio_dim)  -- normalized, as the dataset yields
+        act:      (b, num_frames, action_dim)
+        """
+        if self.decoder is not None:
+            raise NotImplementedError("forward_latent is predictor-only (no raw image "
+                                      "for the decoder recon loss)")
+        z_dct = {"visual": z_visual, "proprio": self.encode_proprio(proprio)}
+        z = self._assemble_z(z_dct, act)
+        return self._loss_from_z(z, None)
+
+    def _loss_from_z(self, z, visual_obs):
+        """Shared loss body for forward()/forward_latent(): everything after the obs is
+        turned into the assembled token grid z. visual_obs (the raw images) is used ONLY
+        by the decoder branches; pass None when there is no decoder."""
         loss = 0
         loss_components = {}
-        z = self.encode(obs, act)
         z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
         z_tgt = z[:, self.num_pred :, :, :]  # (b, num_hist, num_patches, dim)
-        visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
-        visual_tgt = obs['visual'][:, self.num_pred :, ...]  # (b, num_hist, 3, img_size, img_size)
+        visual_tgt = (visual_obs[:, self.num_pred :, ...] if visual_obs is not None
+                      else None)  # (b, num_hist, 3, img_size, img_size)
 
         if self.predictor is not None:
             z_pred = self.predict(z_src)
@@ -262,7 +287,7 @@ class VWorldModel(nn.Module):
                 z.detach()
             )  # recon loss should only affect decoder
             visual_reconstructed = obs_reconstructed["visual"]
-            recon_loss_reconstructed = self.decoder_criterion(visual_reconstructed, obs['visual'])
+            recon_loss_reconstructed = self.decoder_criterion(visual_reconstructed, visual_obs)
             decoder_loss_reconstructed = (
                 recon_loss_reconstructed
                 + self.decoder_latent_loss_weight * diff_reconstructed
