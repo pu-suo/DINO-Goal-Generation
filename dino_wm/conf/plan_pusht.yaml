@@ -55,6 +55,8 @@ planner:
     var_scale: 1
     opt_steps: 30
     eval_every: 1
+    skip_succeeded: false  # fast config: skip CEM for trajs MPC already marked successful
+    traj_chunk: 1          # fast config: trajs batched per rollout call (>1 needs fast_sdpa)
   name: mpc_cem
 
 # --- Phase-0 isolation tests (defaults below are exact no-ops -> stock ~0.90) ---
@@ -83,7 +85,17 @@ min_rot_deg: 45.0                # rotation_heavy keeps goals with |dtheta| >= t
 # fast_encode (default true, RESULT-PRESERVING): cache the start-obs DINOv2 encode
 # instead of re-encoding it per CEM candidate. Override for the A/B regression with
 #   +planner.sub_planner.fast_encode=false
-# plan_eval_mode (default false, RESULT-CHANGING -> needs re-validation): run the
-# dynamics model in eval() at plan time, disabling the predictor's train-mode dropout.
+# plan_eval_mode (default false): force model.eval() at plan time. EXPECTED NO-OP --
+# ckpts are pickled post-val() already in eval mode (verify per checkpoint with
+# scripts/check_ckpt_train_mode.py); kept as fast-config hygiene.
 plan_eval_mode: false
+
+# --- Fast config bundle (docs/PLANNING_SPEED_PROFILE.md "Fast config bundle") -------
+# All default OFF = stock behavior. Result-CHANGING numerics-only when enabled; one
+# bundled re-anchor run covers the whole set. The canonical fast config is:
+#   plan_eval_mode=true fast_tf32=true fast_sdpa=true \
+#   planner.sub_planner.eval_every=999 planner.sub_planner.skip_succeeded=true \
+#   planner.sub_planner.traj_chunk=4
+fast_tf32: false   # TF32 matmuls on the 4090's tensor cores (torch 2.3 default is OFF)
+fast_sdpa: false   # F.scaled_dot_product_attention in the predictor (no NxN score tensor)
 

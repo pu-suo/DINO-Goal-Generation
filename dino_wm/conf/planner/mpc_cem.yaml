@@ -9,5 +9,9 @@ sub_planner:
   var_scale: 1
   opt_steps: 30
   eval_every: 1
+  # Fast-config knobs (docs/PLANNING_SPEED_PROFILE.md "Fast config bundle"); defaults =
+  # stock behavior. Result-CHANGING when enabled (the bundled re-anchor covers them).
+  skip_succeeded: false  # skip full CEM for trajs MPC already marked successful
+  traj_chunk: 1          # trajs batched per rollout call (pair >1 with fast_sdpa=true)
 
 name: mpc_cem

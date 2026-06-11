@@ -182,10 +182,14 @@ class PlanEvaluator:  # evaluator for planning
         proprio_dists = np.linalg.norm(e_obs["proprio"] - self.obs_g["proprio"], axis=1)
         mean_proprio_dist = np.mean(proprio_dists)
 
-        e_obs = move_to_device(self.preprocessor.transform_obs(e_obs), self.device)
-        e_z_obs = self.wm.encode_obs(e_obs)
-        div_visual_emb = torch.norm(e_z_obs["visual"] - i_z_obs["visual"]).item()
-        div_proprio_emb = torch.norm(e_z_obs["proprio"] - i_z_obs["proprio"]).item()
+        # no_grad: this encode previously built a throwaway autograd graph on a batch-N
+        # DINOv2 forward ~311x/run (plan.py instantiates the encoder with requires_grad
+        # on). Diagnostic metric only; no RNG, no numeric change -> result-preserving.
+        with torch.no_grad():
+            e_obs = move_to_device(self.preprocessor.transform_obs(e_obs), self.device)
+            e_z_obs = self.wm.encode_obs(e_obs)
+            div_visual_emb = torch.norm(e_z_obs["visual"] - i_z_obs["visual"]).item()
+            div_proprio_emb = torch.norm(e_z_obs["proprio"] - i_z_obs["proprio"]).item()
 
         logs.update({
             "mean_visual_dist": mean_visual_dist,

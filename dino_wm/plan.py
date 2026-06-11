@@ -205,6 +205,15 @@ class PlanWorkspace:
         if isinstance(self.planner, MPCPlanner):
             self.planner.sub_planner.horizon = cfg_dict["goal_H"]
             self.planner.n_taken_actions = cfg_dict["goal_H"]
+            # Guard rail (docs/POSE_COST_SWEEP.md R9): max_iter null -> np.inf means the
+            # MPC loop only stops on ALL-evals-success, so at any SR<1.0 it never
+            # terminates AND re-rolls a growing action sequence each round (a 12 h
+            # non-terminating run was already paid once). Fail fast instead.
+            if not np.isfinite(self.planner.max_iter):
+                raise ValueError(
+                    "planner.max_iter is null/inf: the MPC loop never terminates at "
+                    "SR<1.0. Set planner.max_iter (the validated runs used 10)."
+                )
         else:
             self.planner.horizon = cfg_dict["goal_H"]
 
@@ -538,6 +547,39 @@ class DummyWandbRun:
         pass
 
 
+def apply_fast_flags(cfg_dict, model):
+    """Apply the opt-in fast-config GPU flags (docs/PLANNING_SPEED_PROFILE.md, 'Fast
+    config bundle'). Both default OFF = stock behavior. Both are result-CHANGING
+    (numerics only -- no RNG stream is touched) and are covered by the single bundled
+    re-anchor run, not per-flag A/Bs. Shared by plan.py and plan_multicolor.py.
+    """
+    if cfg_dict.get("fast_tf32", False):
+        torch.backends.cuda.matmul.allow_tf32 = True  # cudnn TF32 is already default-on
+        print("[plan] fast_tf32=True -> TF32 matmuls (numerics shift ~1e-3; "
+              "covered by the fast-config re-anchor)")
+    if cfg_dict.get("fast_sdpa", False):
+        from models.vit import enable_sdpa
+        n = enable_sdpa(model.predictor)
+        print(f"[plan] fast_sdpa=True -> SDPA attention on {n} predictor blocks"
+              + ("" if n else " (WARNING: no models.vit.Attention found -- no-op)"))
+        # The Attention forward refuses SDPA while dropout would be active (RNG guard),
+        # so a train-mode predictor with p>0 silently falls back to naive attention.
+        # Surface that instead of letting the line above overpromise.
+        drop_active = model.predictor.training and any(
+            isinstance(m, torch.nn.Dropout) and m.p > 0
+            for m in model.predictor.modules()
+        )
+        if drop_active:
+            print("[plan] WARNING: predictor is in train mode with dropout p>0 -- SDPA "
+                  "will fall back to naive attention every forward. Set "
+                  "plan_eval_mode=true (and run scripts/check_ckpt_train_mode.py).")
+    traj_chunk = int(cfg_dict.get("planner", {}).get("sub_planner", {}).get("traj_chunk", 1) or 1)
+    if traj_chunk > 1 and not cfg_dict.get("fast_sdpa", False):
+        print(f"[plan] WARNING: traj_chunk={traj_chunk} without fast_sdpa=true -- naive "
+              f"attention materializes ~22 MB/candidate fp32 score tensors at 588 tokens; "
+              f"{traj_chunk * 300} candidates/call will likely OOM a 24 GB GPU.")
+
+
 def planning_main(cfg_dict):
     output_dir = cfg_dict["saved_folder"]
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -569,16 +611,22 @@ def planning_main(cfg_dict):
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
-    # Opt-in (default OFF, result-CHANGING -> needs re-validation): run the dynamics
-    # model in eval() during planning. By default the model is left in train() mode, so
-    # the predictor's dropout (p=0.1) is ACTIVE and the validated SR was measured with
-    # it. eval() disables that dropout -> deterministic rollouts (and unblocks batching
-    # evals together) but CHANGES the absolute SR, so it is gated behind this flag.
-    # See docs/PLANNING_SPEED_PROFILE.md ("Recommended follow-up").
+    # plan_eval_mode (default OFF): force model.eval() at plan time. CORRECTION
+    # (2026-06-10, supersedes the older comment claiming train-mode dropout is active by
+    # default): checkpoints pickle whole modules AFTER train.py's val() pass -- val()
+    # calls model.eval() (train.py:550) right before save_ckpt() (train.py:389-392), and
+    # nothing in the plan path calls .train() -- so the unpickled predictor is already in
+    # eval mode and dropout was almost certainly NEVER active during planning. Verify per
+    # checkpoint with scripts/check_ckpt_train_mode.py. Enabling this flag is then a
+    # belt-and-braces no-op (recommended hygiene in the fast config); it only changes
+    # results in the unexpected case the check prints training=True.
+    # See docs/PLANNING_SPEED_PROFILE.md ("Fast config bundle").
     if cfg_dict.get("plan_eval_mode", False):
         model.eval()
-        print("[plan] plan_eval_mode=True -> model.eval(): predictor dropout OFF "
-              "(deterministic, but CHANGES SR vs the train-mode baseline)")
+        print("[plan] plan_eval_mode=True -> model.eval() (expected no-op: ckpts are "
+              "saved post-val() in eval mode; see scripts/check_ckpt_train_mode.py)")
+
+    apply_fast_flags(cfg_dict, model)
 
     # Phase-0 isolation tests: inject decal / block-only-success kwargs for STOCK
     # pusht only. Env kwargs normally come from the model's saved hydra.yaml (NOT

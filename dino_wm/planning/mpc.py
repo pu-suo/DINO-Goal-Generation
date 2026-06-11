@@ -84,6 +84,12 @@ class MPCPlanner(BasePlanner):
         memo_actions = None
         while not np.all(self.is_success) and self.iter < self.max_iter:
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
+            # Fast-config (opt-in, CEMPlanner.skip_succeeded): tell the sub-planner which
+            # trajs already succeeded so it can skip their full CEM treatment. Their taken
+            # actions are zeroed by _apply_success_mask below regardless, so re-planning
+            # them only burns compute. No-op unless the sub-planner opted in.
+            if getattr(self.sub_planner, "skip_succeeded", False):
+                self.sub_planner.success_mask = self.is_success.copy()
             actions, _ = self.sub_planner.plan(
                 obs_0=cur_obs_0,
                 obs_g=obs_g,

@@ -327,12 +327,16 @@ class VWorldModel(nn.Module):
         Why this preserves results exactly (see docs/PLANNING_SPEED_PROFILE.md):
         the DINOv2 encoder and the proprio encoder are frozen and contain NO active
         stochastic layers (dropout p=0 / drop_path=0), so encode_obs() draws NOTHING
-        from the RNG stream. During planning the dynamics model is left in train()
-        mode, so the predictor's dropout (p=0.1) IS active and IS the only RNG
-        consumer in the rollout. This method runs the SAME number of predict() calls
-        in the SAME order as rollout(), so the dropout RNG stream -- hence every
-        predicted latent -- is exactly what rollout() would produce. We only hoist
-        the deterministic, RNG-free encode out of the per-candidate inner loop.
+        from the RNG stream. The original analysis assumed the predictor's dropout
+        (p=0.1) is active at plan time (train mode) and is the rollout's only RNG
+        consumer; per the 2026-06-10 CORRECTION in docs/PLANNING_SPEED_PROFILE.md,
+        checkpoints are pickled post-val() in eval mode, so dropout is expected
+        INACTIVE and rollouts deterministic (verify per checkpoint with
+        scripts/check_ckpt_train_mode.py). Either way the argument holds: this method
+        runs the SAME number of predict() calls in the SAME order as rollout(), so
+        any dropout RNG stream -- hence every predicted latent -- is exactly what
+        rollout() would produce. We only hoist the deterministic, RNG-free encode out
+        of the per-candidate inner loop.
 
         input:  z_obs_0 (dict): {'visual': (b, n, P, D), 'proprio': (b, n, prop_dim)}
                   act: (b, t+n, action_dim)

@@ -21,9 +21,17 @@ debug_dset_init: False
 goal_pusher_perturbation: real
 goal_pusher_offset: 40.0
 # Planning speed (docs/PLANNING_SPEED_PROFILE.md): fast_encode is default-on via the
-# planner config; plan_eval_mode (default false) is the RESULT-CHANGING eval()-at-plan
-# opt-in. Override fast_encode with +planner.sub_planner.fast_encode=false for A/B.
+# planner config (override +planner.sub_planner.fast_encode=false for A/B).
+# plan_eval_mode: force eval() at plan time -- EXPECTED NO-OP (ckpts pickle post-val()
+# in eval mode; verify with scripts/check_ckpt_train_mode.py). Fast-config hygiene.
 plan_eval_mode: false
+# Fast config bundle (all default OFF = stock; numerics-only when enabled; one bundled
+# re-anchor covers the set -- see docs/PLANNING_SPEED_PROFILE.md "Fast config bundle"):
+#   plan_eval_mode=true fast_tf32=true fast_sdpa=true \
+#   planner.sub_planner.eval_every=999 planner.sub_planner.skip_succeeded=true \
+#   planner.sub_planner.traj_chunk=4
+fast_tf32: false
+fast_sdpa: false
 
 objective:
   _target_: planning.objectives.create_objective_fn
@@ -44,6 +52,8 @@ planner:
     var_scale: 1
     opt_steps: 30
     eval_every: 1
+    skip_succeeded: false  # fast config: skip CEM for trajs MPC already marked successful
+    traj_chunk: 1          # fast config: trajs batched per rollout call (>1 needs fast_sdpa)
   name: mpc_cem
 
 # --- multi-color oracle settings ---------------------------------------------

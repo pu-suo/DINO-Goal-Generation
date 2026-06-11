@@ -35,7 +35,7 @@ from utils import seed
 from planning.mpc import MPCPlanner
 from env.pusht.multicolor_common import pusher_patch_mask, contact_pusher_pose
 from env.pusht import multicolor_sampler as mcs
-from plan import PlanWorkspace, load_model
+from plan import PlanWorkspace, load_model, apply_fast_flags
 
 warnings.filterwarnings("ignore")
 
@@ -164,12 +164,15 @@ def planning_main_mc(cfg_dict):
 
     model_ckpt = Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
     model = load_model(model_ckpt, model_cfg, model_cfg.num_action_repeat, device=device)
-    # Opt-in (default OFF, result-CHANGING): disable train-mode predictor dropout at
-    # plan time. See docs/PLANNING_SPEED_PROFILE.md ("Recommended follow-up").
+    # plan_eval_mode: force eval() at plan time. Expected NO-OP -- ckpts are pickled
+    # post-val() in eval mode (see the corrected comment in plan.py and
+    # scripts/check_ckpt_train_mode.py). Kept as belt-and-braces fast-config hygiene.
     if cfg_dict.get("plan_eval_mode", False):
         model.eval()
-        print("[plan] plan_eval_mode=True -> model.eval(): predictor dropout OFF "
-              "(deterministic, but CHANGES SR vs the train-mode baseline)")
+        print("[plan] plan_eval_mode=True -> model.eval() (expected no-op: ckpts are "
+              "saved post-val() in eval mode; see scripts/check_ckpt_train_mode.py)")
+
+    apply_fast_flags(cfg_dict, model)
 
     env_kwargs = dict(with_velocity=True, with_target=True, n_targets=mc["n_targets"],
                       outline_thickness=mc["outline_thickness"],
