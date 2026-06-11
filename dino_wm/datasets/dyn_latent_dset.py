@@ -21,7 +21,7 @@ from torch.utils.data import Dataset
 
 
 class DynLatentSliceDataset(Dataset):
-    def __init__(self, dyn_dir, num_frames):
+    def __init__(self, dyn_dir, num_frames, max_traj=None):
         d = Path(dyn_dir)
         self.meta = json.load(open(d / "meta.json"))
         self.fs = self.meta["frameskip"]
@@ -31,6 +31,9 @@ class DynLatentSliceDataset(Dataset):
         self.proprio = torch.load(d / "proprio.pth")    # (n, S, pdim) fp32
         self.actions = torch.load(d / "actions.pth")    # (n, T, adim) fp32
         self.states = torch.load(d / "states.pth")      # (n, S, sdim) fp32
+        if max_traj is not None:                        # scaling-curve subset (first k trajs)
+            self.visual, self.proprio = self.visual[:max_traj], self.proprio[:max_traj]
+            self.actions, self.states = self.actions[:max_traj], self.states[:max_traj]
         self.action_dim = self.actions.shape[-1] * self.fs
         self.proprio_dim = self.proprio.shape[-1]
         self.state_dim = self.states.shape[-1]

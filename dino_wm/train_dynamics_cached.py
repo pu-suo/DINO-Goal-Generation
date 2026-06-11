@@ -52,6 +52,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--num_workers", type=int, default=8)
+    ap.add_argument("--max_traj", type=int, default=None, help="train on first k trajs (scaling curve)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -71,7 +72,7 @@ def main():
         p.requires_grad_(False)
 
     num_frames = model_cfg.num_hist + model_cfg.num_pred
-    tr = DynLatentSliceDataset(Path(args.dyn_dir) / "train", num_frames)
+    tr = DynLatentSliceDataset(Path(args.dyn_dir) / "train", num_frames, max_traj=args.max_traj)
     va = DynLatentSliceDataset(Path(args.dyn_dir) / "val", num_frames)
     tl = DataLoader(tr, batch_size=args.batch_size, shuffle=True, drop_last=True,
                     num_workers=args.num_workers, pin_memory=True)
