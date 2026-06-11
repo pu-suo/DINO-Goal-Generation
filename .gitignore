@@ -16,6 +16,12 @@ __pycache__/
 /dino_wm/plan_outputs/
 /dino_wm/multirun/
 /dino_wm/wandb/
+/dino_wm/runs/
+# Ruled-out quasimetric eval outputs (see docs/RULED_OUT.md)
+/dino_wm/qm_outputs/
+# Stray plan/eval artifacts dropped at the dino_wm/ root
+/dino_wm/logs.json
+/dino_wm/plan_targets.pkl
 
 # ---- large external / generated artifacts (anchored) ----
 # Downloaded model checkpoints (OSF: pusht / point_maze / wall)
