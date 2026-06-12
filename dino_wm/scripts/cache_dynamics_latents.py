@@ -42,10 +42,14 @@ from models.dino import DinoV2Encoder
 
 
 @torch.no_grad()
-def encode_split(dset, fs, encoder, enc_resize, device, batch):
+def encode_split(dset, fs, encoder, enc_resize, device, batch, cache_stride=None):
+    """cache_stride: env-frame stride to STORE latents at. Default fs (model-step grid,
+    pairs with DynLatentSliceDataset). cache_stride=1 stores EVERY frame (pairs with
+    StrideOneLatentDataset, which reproduces TrajSlicerDataset's stride-1 phase aug)."""
+    cs = cache_stride or fs
     n = len(dset)
     T = dset.get_seq_length(0)
-    grid = list(range(0, T, fs))          # model-step env-frame indices
+    grid = list(range(0, T, cs))          # env-frame indices to cache
     S = len(grid)
     vis = torch.empty(n, S, 196, encoder.emb_dim, dtype=torch.float16)
     prop = torch.empty(n, S, dset.proprio_dim, dtype=torch.float32)
@@ -83,6 +87,10 @@ def main():
     ap.add_argument("--data_path", required=True)
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     ap.add_argument("--frameskip", type=int, default=5)
+    ap.add_argument("--cache_stride", type=int, default=None,
+                    help="env-frame stride to STORE latents at (default=frameskip=model-step grid; "
+                         "1 = every frame, for the stride-1 phase-augmented recipe). Output dir is "
+                         "dyn_latents (grid) or dyn_latents_pf (per-frame).")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--selfcheck", action="store_true",
                     help="verify cached frame-0 latents match the standing start_latents cache")
@@ -99,15 +107,17 @@ def main():
             print(f"skip {split} (missing)"); continue
         dset = PushTMultiColorDataset(data_path=str(sp), transform=tfm,
                                       normalize_action=True, with_velocity=True)
+        cs = args.cache_stride or args.frameskip
         vis, prop, actions, states, grid, S = encode_split(
-            dset, args.frameskip, encoder, enc_resize, device, args.batch)
-        out = Path(args.data_path) / "dyn_latents" / split
+            dset, args.frameskip, encoder, enc_resize, device, args.batch, cache_stride=cs)
+        sub = "dyn_latents" if cs == args.frameskip else "dyn_latents_pf"
+        out = Path(args.data_path) / sub / split
         out.mkdir(parents=True, exist_ok=True)
         torch.save(vis, out / "visual.pth")
         torch.save(prop, out / "proprio.pth")
         torch.save(actions, out / "actions.pth")
         torch.save(states, out / "states.pth")
-        json.dump({"frameskip": args.frameskip, "S": S, "n_traj": len(dset),
+        json.dump({"frameskip": args.frameskip, "cache_stride": cs, "S": S, "n_traj": len(dset),
                    "proprio_dim": dset.proprio_dim, "action_dim": dset.action_dim,
                    "grid": grid}, open(out / "meta.json", "w"))
         print(f"[{split}] visual {tuple(vis.shape)} proprio {tuple(prop.shape)} -> {out}")
