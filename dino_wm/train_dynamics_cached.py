@@ -34,13 +34,13 @@ from utils import move_to_device
 
 def evaluate(model, loader, device):
     model.eval()
-    tot, n = 0.0, 0
+    tot = torch.zeros((), device=device); n = 0
     with torch.no_grad():
         for obs, act, _ in loader:
             obs = move_to_device(obs, device); act = act.to(device)
             _, _, _, loss, _ = model.forward_latent(obs["visual"], obs["proprio"], act)
-            tot += loss.item() * act.shape[0]; n += act.shape[0]
-    return tot / max(1, n)
+            tot += loss.detach() * act.shape[0]; n += act.shape[0]
+    return (tot / max(1, n)).item()
 
 
 def main():
@@ -96,15 +96,15 @@ def main():
     for e in range(1, args.epochs + 1):
         epoch = start_epoch + e
         model.train()
-        run, n = 0.0, 0
+        run = torch.zeros((), device=device); n = 0
         for obs, act, _ in tqdm(tl, desc=f"Epoch {epoch} (cached)"):
             obs = move_to_device(obs, device); act = act.to(device)
             _, _, _, loss, _ = model.forward_latent(obs["visual"], obs["proprio"], act)
             predictor_opt.zero_grad(); act_opt.zero_grad()
             loss.backward()
             predictor_opt.step(); act_opt.step()
-            run += loss.item() * act.shape[0]; n += act.shape[0]
-        train_loss = run / max(1, n)
+            run += loss.detach() * act.shape[0]; n += act.shape[0]   # on-GPU accum, no per-step sync
+        train_loss = (run / max(1, n)).item()
         val_loss = evaluate(model, vl, device)
         print(f"Epoch {epoch}  Training loss: {train_loss:.4f}  Validation loss: {val_loss:.4f}")
         hist.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
