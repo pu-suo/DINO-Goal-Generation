@@ -92,6 +92,7 @@ def main():
                          "1 = every frame, for the stride-1 phase-augmented recipe). Output dir is "
                          "dyn_latents (grid) or dyn_latents_pf (per-frame).")
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--max_traj", type=int, default=None, help="cache only first k TRAIN trajs (val/test full)")
     ap.add_argument("--selfcheck", action="store_true",
                     help="verify cached frame-0 latents match the standing start_latents cache")
     args = ap.parse_args()
@@ -106,7 +107,8 @@ def main():
         if not sp.exists():
             print(f"skip {split} (missing)"); continue
         dset = PushTMultiColorDataset(data_path=str(sp), transform=tfm,
-                                      normalize_action=True, with_velocity=True)
+                                      normalize_action=True, with_velocity=True,
+                                      n_rollout=(args.max_traj if split == "train" else None))
         cs = args.cache_stride or args.frameskip
         vis, prop, actions, states, grid, S = encode_split(
             dset, args.frameskip, encoder, enc_resize, device, args.batch, cache_stride=cs)
