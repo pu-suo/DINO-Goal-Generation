@@ -27,13 +27,13 @@ class DynLatentSliceDataset(Dataset):
         self.fs = self.meta["frameskip"]
         self.S = self.meta["S"]
         self.num_frames = num_frames
-        self.visual = torch.load(d / "visual.pth")      # (n, S, 196, 384) fp16
+        self.visual = torch.load(d / "visual.pth", mmap=True)   # (n,S,196,384) fp16; mmap: no eager 30GB read
         self.proprio = torch.load(d / "proprio.pth")    # (n, S, pdim) fp32
         self.actions = torch.load(d / "actions.pth")    # (n, T, adim) fp32
         self.states = torch.load(d / "states.pth")      # (n, S, sdim) fp32
         if max_traj is not None:                        # scaling-curve subset (first k trajs)
-            self.visual, self.proprio = self.visual[:max_traj], self.proprio[:max_traj]
-            self.actions, self.states = self.actions[:max_traj], self.states[:max_traj]
+            self.visual = self.visual[:max_traj].contiguous()  # materialize only the subset off the mmap
+            self.proprio, self.actions, self.states = self.proprio[:max_traj], self.actions[:max_traj], self.states[:max_traj]
         self.action_dim = self.actions.shape[-1] * self.fs
         self.proprio_dim = self.proprio.shape[-1]
         self.state_dim = self.states.shape[-1]
@@ -74,13 +74,13 @@ class StrideOneLatentDataset(Dataset):
         assert self.meta.get("cache_stride") == 1, "StrideOneLatentDataset needs a per-frame cache (cache_stride=1)"
         self.fs = self.meta["frameskip"]
         self.num_frames = num_frames
-        self.visual = torch.load(d / "visual.pth")      # (n, T, 196, 384) fp16
+        self.visual = torch.load(d / "visual.pth", mmap=True)   # (n,T,196,384) fp16; mmap: lazy page reads
         self.proprio = torch.load(d / "proprio.pth")    # (n, T, pdim) fp32
         self.actions = torch.load(d / "actions.pth")    # (n, T, adim) fp32
         self.states = torch.load(d / "states.pth")      # (n, T, sdim) fp32
         if max_traj is not None:
-            self.visual, self.proprio = self.visual[:max_traj], self.proprio[:max_traj]
-            self.actions, self.states = self.actions[:max_traj], self.states[:max_traj]
+            self.visual = self.visual[:max_traj].contiguous()  # materialize only the subset off the mmap
+            self.proprio, self.actions, self.states = self.proprio[:max_traj], self.actions[:max_traj], self.states[:max_traj]
         self.action_dim = self.actions.shape[-1] * self.fs
         self.proprio_dim = self.proprio.shape[-1]
         self.state_dim = self.states.shape[-1]
