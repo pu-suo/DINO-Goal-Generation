@@ -39,6 +39,7 @@ from hydra.utils import to_absolute_path
 
 import custom_resolvers  # noqa: F401
 from env.venv import SubprocVectorEnv
+from env.pusht.multicolor_common import contact_pusher_pose
 from utils import seed, move_to_device
 from planning.mpc import MPCPlanner
 from plan import PlanWorkspace, load_model, apply_fast_flags
@@ -83,12 +84,22 @@ class CoordPlanWorkspace(PlanWorkspace):
         self.state_0 = state_0
         self.state_g = state_g
         self.gt_actions = None
-        # deployable mask: drop the goal-frame pusher patches (teleport keeps pusher@start,
-        # so goal and real proxy coincide). Populated for the base PlanWorkspace mask path.
-        gp = np.asarray(state_g, dtype=np.float64)[:, 0:2].copy()
-        self.goal_pusher_xy = gp
-        self.real_pusher_xy = gp.copy()
-        self.coord_specs = np.asarray(state_g, dtype=np.float64)[:, 2:5].copy()   # (N,3) block@spec
+        # Deployable masked energy drops the UNION of two pusher positions (matches the
+        # validated plan.py mask): (1) the pusher in the GOAL latent -- the teleport keeps
+        # it at START; and (2) a deployable proxy for where the pusher ENDS UP after the
+        # push -- a plausible contact pose at the goal block, computed from (block_start,
+        # block_goal=spec), both known at plan time. Masking only (1) leaves the rollout's
+        # end-of-push pusher (near the goal block) UNMASKED, penalizing the correct push.
+        s0 = np.asarray(state_0, dtype=np.float64)
+        sg = np.asarray(state_g, dtype=np.float64)
+        self.goal_pusher_xy = sg[:, 0:2].copy()                       # pusher in the goal teleport frame
+        real = sg[:, 0:2].copy()
+        for i in range(len(sg)):
+            p = contact_pusher_pose(s0[i, 2:4], sg[i, 2:5])           # deployable end-of-push proxy
+            if p is not None:
+                real[i] = p
+        self.real_pusher_xy = real
+        self.coord_specs = sg[:, 2:5].copy()                          # (N,3) block@spec
 
     # --- goal-latent override (bridge / swapped_spec / random) ----------------
     def _load_coord_g(self):
