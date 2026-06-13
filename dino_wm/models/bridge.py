@@ -1,14 +1,19 @@
-"""`g` (the bridge): (z_start, text) -> z_goal, single forward pass, everything else frozen.
+"""`g` (the bridge): (z_start, spec) -> z_goal, single forward pass, everything else frozen.
 
-Definitive spec: specs/G_ARCHITECTURE.md (read it in full). This implements §3 (the
-block-by-block bidirectional DiT forward), §4 (the weighted-L2 loss + changed-region mask),
-and §6 (the frozen text encoder / trainable text_proj boundary).
+Definitive spec: specs/G_ARCHITECTURE.md + the clean-scene COORDINATE pivot (Option A,
+docs/CLEAN_SCENE_PIVOT.md). This implements §3 (the block-by-block bidirectional DiT
+forward), §4 (the weighted-L2 loss + changed-region mask), §6 (the frozen text encoder),
+AND the coordinate front-end (CoordSpecEncoder): Fourier (x,y) + (sin,cos) theta tokens
+cross-attended at every block, plus a soft 2D Gaussian heatmap over the 14x14 patch grid
+added as a spatial positional bias. ONE module, two conditioning front-ends (cond_mode):
+'coord' (primary) and 'text' (secondary); everything after cross-attn (self-attn stack,
+per-patch zero-init gate, residual head, loss) is SHARED verbatim.
 
 CONTRACT (do NOT break):
-- Input  z_start: (B, 196, 384) = DINOv2 x_norm_patchtokens (CLS stripped, LayerNorm applied,
-  single frame -- NO num_hist time axis). Output z_goal lives in the SAME space.
+- Input  z_start: (B, 196, 384) = DINOv2 x_norm_patchtokens (CLS stripped, single frame --
+  NO num_hist time axis). Output z_goal lives in the SAME space.
 - Output is the FULL grid via residual: z_goal = z_start + gate * Delta  (never object-only).
-- Frozen: encoder, dynamics, CEM, text encoder. Trainable: text_proj, blocks, head, gate, pos_embed.
+- Frozen: encoder, dynamics, CEM, text encoder. Trainable: spec/text front-end, blocks, head, gate, pos_embed.
 - No actions, no time axis, no autoregression, no causal mask. `g` is NOT the AC predictor.
 """
 import math
@@ -18,6 +23,15 @@ import torch.nn as nn
 
 N_PATCHES = 196
 DIM = 384
+GRID = 14         # 14x14 = 196 patches, row-major token = ri*GRID + ci (ci=col<->x, ri=row<->y)
+SIM = 512.0       # PushT sim-space side length
+
+
+def sim_xy_to_grid(xy_sim, grid=GRID, sim=SIM):
+    """Map sim-512 (x,y) -> continuous patch-grid coords (col, row), matching
+    env.pusht.multicolor_common.pusher_patch_mask EXACTLY (col<->x, row<->y, linear
+    scale, no flip; token index = row*grid + col). xy_sim: (...,2) -> (col,row) (...,2)."""
+    return xy_sim / sim * grid
 
 
 # ----------------------------------------------------------------------------- block
@@ -48,6 +62,58 @@ class BridgeBlock(nn.Module):
         return x
 
 
+# ----------------------------------------------------------------- coord front-end
+class CoordSpecEncoder(nn.Module):
+    """Coordinate spec front-end (clean-scene pivot). Turns a goal pose (x,y,theta)
+    [+ optional extent] in sim-512 coords into (a) a small set of cross-attention
+    K/V tokens and (b) a soft 2D Gaussian heatmap over the 14x14 patch grid used as a
+    spatial positional bias on the patch tokens.
+
+    - (x,y) -> NeRF-style Fourier features (normalized to [0,1]) -> a POSITION token.
+    - theta -> (sin,cos) (removes the 0/2pi wraparound) -> an ORIENTATION token.
+    - extent -> a scalar token (0 in the point regime; extent only widens the scoring
+      tolerance at eval, never the synthesis geometry -- so it stays ~0 here).
+    - heatmap: Gaussian centered at the goal patch (col,row) -> per-patch additive bias
+      (zero heatmap -> zero bias; init keeps the residual identity since the gate is 0).
+    """
+
+    def __init__(self, dim=DIM, n_freq=12, grid=GRID, sim=SIM, sigma=1.2):
+        super().__init__()
+        self.dim, self.grid, self.sim, self.sigma = dim, grid, sim, sigma
+        self.register_buffer("freqs", (2.0 ** torch.arange(n_freq)) * math.pi, persistent=False)
+        pos_in = 2 * 2 * n_freq                       # x,y each -> [sin,cos] over n_freq
+        self.pos_mlp = nn.Sequential(nn.Linear(pos_in, dim), nn.GELU(), nn.Linear(dim, dim))
+        self.ori_mlp = nn.Sequential(nn.Linear(2, dim), nn.GELU(), nn.Linear(dim, dim))
+        self.ext_mlp = nn.Sequential(nn.Linear(1, dim), nn.GELU(), nn.Linear(dim, dim))
+        self.type_emb = nn.Parameter(torch.zeros(3, dim))     # pos / ori / ext token-type
+        nn.init.trunc_normal_(self.type_emb, std=0.02)
+        self.heat_vec = nn.Linear(1, dim, bias=False)         # per-patch heatmap -> bias vector
+        # patch centers in (col,row) units; token t -> ci=t%grid (col<->x), ri=t//grid (row<->y)
+        idx = torch.arange(grid * grid)
+        centers = torch.stack([(idx % grid) + 0.5, (idx // grid) + 0.5], dim=-1)  # (196,2)=(col,row)
+        self.register_buffer("centers", centers, persistent=False)
+
+    def _fourier(self, v):                             # v in [0,1], (B,) -> (B, 2*n_freq)
+        a = v.unsqueeze(-1) * self.freqs
+        return torch.cat([a.sin(), a.cos()], dim=-1)
+
+    def tokens(self, spec):                            # spec (B,>=3) sim-512 -> (B,3,dim)
+        x = (spec[:, 0] / self.sim).clamp(0, 1)
+        y = (spec[:, 1] / self.sim).clamp(0, 1)
+        th = spec[:, 2]
+        ext = spec[:, 3] if spec.shape[1] > 3 else torch.zeros_like(x)
+        pos_t = self.pos_mlp(torch.cat([self._fourier(x), self._fourier(y)], dim=-1)) + self.type_emb[0]
+        ori_t = self.ori_mlp(torch.stack([th.sin(), th.cos()], dim=-1)) + self.type_emb[1]
+        ext_t = self.ext_mlp(ext.unsqueeze(-1)) + self.type_emb[2]
+        return torch.stack([pos_t, ori_t, ext_t], dim=1)
+
+    def heatmap_bias(self, spec):                      # spec (B,>=3) -> (B,196,dim)
+        tgt = sim_xy_to_grid(spec[:, :2], self.grid, self.sim).unsqueeze(1)   # (B,1,2) (col,row)
+        d2 = ((self.centers.unsqueeze(0) - tgt) ** 2).sum(-1)                 # (B,196)
+        h = torch.exp(-d2 / (2.0 * self.sigma ** 2))                          # (B,196)
+        return self.heat_vec(h.unsqueeze(-1))                                 # (B,196,dim)
+
+
 # ------------------------------------------------------------------------------ g
 class BridgeG(nn.Module):
     """The bridge `g`. forward(z_start, text_tokens, text_mask) -> z_goal.
@@ -58,18 +124,25 @@ class BridgeG(nn.Module):
     """
 
     def __init__(self, dim=DIM, depth=6, heads=6, mlp_ratio=4, d_text=DIM,
-                 n_patches=N_PATCHES, dropout=0.0, residual=True, gate_per_patch=True):
+                 n_patches=N_PATCHES, dropout=0.0, residual=True, gate_per_patch=True,
+                 cond_mode="text", n_freq=12, heat_sigma=1.2):
         super().__init__()
         self.dim = dim
         self.n_patches = n_patches
         self.residual = residual
+        self.cond_mode = cond_mode
 
         # learned patch positional embedding (§3: learned [1,196,384])
         self.pos_embed = nn.Parameter(torch.zeros(1, n_patches, dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-        # trainable text projection d_text -> dim (§2/§6: small MLP)
-        self.text_proj = nn.Sequential(nn.Linear(d_text, dim), nn.GELU(), nn.Linear(dim, dim))
+        # conditioning front-end: 'coord' (primary, CoordSpecEncoder) or 'text' (MiniLM proj)
+        if cond_mode == "coord":
+            self.spec_enc = CoordSpecEncoder(dim, n_freq=n_freq, sigma=heat_sigma)
+        elif cond_mode == "text":
+            self.text_proj = nn.Sequential(nn.Linear(d_text, dim), nn.GELU(), nn.Linear(dim, dim))
+        else:
+            raise ValueError(f"cond_mode must be 'coord' or 'text', got {cond_mode}")
 
         self.blocks = nn.ModuleList([
             BridgeBlock(dim, heads, mlp_ratio, dropout) for _ in range(depth)])
@@ -93,19 +166,35 @@ class BridgeG(nn.Module):
             nn.init.ones_(m.weight)
             nn.init.zeros_(m.bias)
 
-    def forward(self, z_start, text_tokens, text_mask=None):
-        """z_start: (B,196,384); text_tokens: (B,L,d_text); text_mask: (B,L) bool True=real."""
+    def _trunk(self, z_start, kv, kpm=None, spatial_bias=None):
+        """Shared core: patch self-attn stack cross-attending to `kv`, residual head with
+        per-patch zero-init gate. `spatial_bias` (B,196,dim) is added to the patch tokens
+        (coord heatmap). The zero-init gate makes z_goal == z_start at init regardless of kv/bias."""
         assert z_start.shape[-2:] == (self.n_patches, self.dim), \
             f"z_start must be (B,{self.n_patches},{self.dim}), got {tuple(z_start.shape)}"
         x = z_start + self.pos_embed
-        text_kv = self.text_proj(text_tokens)
-        # nn.MultiheadAttention key_padding_mask: True = IGNORE -> invert the real-token mask
-        kpm = (~text_mask) if text_mask is not None else None
+        if spatial_bias is not None:
+            x = x + spatial_bias
         for block in self.blocks:
-            x = block(x, text_kv, text_key_padding_mask=kpm)
+            x = block(x, kv, text_key_padding_mask=kpm)
         raw_delta = self.head(self.head_norm(x))
         delta = self.gate * raw_delta
         return (z_start + delta) if self.residual else delta
+
+    def forward_coord(self, z_start, spec):
+        """COORD path (primary). z_start: (B,196,384); spec: (B,>=3) = (x,y,theta[,extent]) sim-512."""
+        assert self.cond_mode == "coord", "model built with cond_mode='text'; use forward()"
+        kv = self.spec_enc.tokens(spec)              # (B,3,dim) cross-attn K/V
+        bias = self.spec_enc.heatmap_bias(spec)      # (B,196,dim) spatial positional bias
+        return self._trunk(z_start, kv, kpm=None, spatial_bias=bias)
+
+    def forward(self, z_start, text_tokens, text_mask=None):
+        """TEXT path (secondary). z_start: (B,196,384); text_tokens: (B,L,d_text); text_mask (B,L) bool True=real."""
+        assert self.cond_mode == "text", "model built with cond_mode='coord'; use forward_coord()"
+        kv = self.text_proj(text_tokens)
+        # nn.MultiheadAttention key_padding_mask: True = IGNORE -> invert the real-token mask
+        kpm = (~text_mask) if text_mask is not None else None
+        return self._trunk(z_start, kv, kpm=kpm)
 
 
 # --------------------------------------------------------------------------- loss
