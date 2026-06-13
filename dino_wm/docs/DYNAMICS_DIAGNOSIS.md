@@ -4,7 +4,47 @@
 > = **0.40 pose-SR** (n=10) vs the 0.80 gate, capping `g`. All numbers below are
 > **measured** on the vast.ai 4090 unless marked *reasoned*.
 
-## Verdict: DATA-BOUND (under-trained on a 12× smaller dataset), not recipe, not config
+## FINAL VERDICT (2026-06-12): REPRESENTATIONAL CEILING — not data, epochs, recipe, or phase-aug
+
+> The "DATA-BOUND" verdict below (kept for the record) was the *initial* hypothesis. After
+> building a cached-latent fast-training path and exhausting every dynamics-side lever, the
+> conclusion flipped: the multicolor block-region latent is **~2× harder to predict than
+> single-T regardless of training**, because the frozen DINOv2 ViT-S contextualizes the
+> block's patch tokens with the 4 colored decals (ViT attention) → a representational floor
+> the dynamics predictor cannot train through. Same root as the pose-decode anomaly (§4).
+
+**block tf-1-step floors at ~16 (stock single-T = 8.0); all four levers exhausted:**
+
+| lever | result | block tf-1step |
+|---|---|---|
+| **Data** (2k→5k→10k, warm-start) | flat | 17.2 → 16.4 → 15.9 |
+| **Epochs** (grid-10k to convergence, ep17→45) | flat | ~16 (+ M-real SR flat 0.4) |
+| **Phase-aug** (stride-1-2k vs grid-2k, matched, converged) | +0.6 only | 16.4 vs 17.0 |
+| **Recipe-fidelity** (stride-1 reproduces train.py exactly) | confirmed | — |
+| stock single-T (own data, plans @0.90) | the floor | **8.0 / 7.6** |
+
+- Converged grid-10k **M-real SR = 0.40** = the 2k baseline ⇒ full training budget did not
+  improve *planning*, the metric that matters (not just block-tf).
+- grid-2k overfits (train 0.11 ≪ val 0.21) yet block-tf stays 17 ⇒ NOT capacity- or
+  data-limited; it generalizes to the best predictor the contaminated latent allows.
+- Data curve is **flat, not slowly-improving** ⇒ not on a data-scaling curve; more data
+  (18k/24k) would not help. **24k gen killed.**
+
+**The lever is NOT dynamics training — it is the scene/encoder representation.** Candidate
+fixes (next decision): fewer decals (2 vs 4), thinner/subtler decal rendering, or a larger
+frozen encoder (DINOv2 ViT-B/L) that separates block from decals better. Confirm-the-mechanism
+experiment: decal-count ablation (1/2/4 decals → block-tf); if 1-2 decals → block-tf ~8-10,
+the contamination mechanism is proven and the testbed sweet-spot is found.
+
+Tooling built this session (all on `main`): cached-latent dynamics training
+(`scripts/cache_dynamics_latents.py` + `datasets/dyn_latent_dset.py`
+{DynLatentSliceDataset, StrideOneLatentDataset} + `train_dynamics_cached.py`,
+forward_latent in `models/visual_world_model.py`) — ~16h/epoch → minutes; mmap load,
+on-GPU loss accum; `tests/test_{forward_latent_equiv,stride_one_windows,bridge_override}.py`.
+
+---
+
+## (Superseded) Initial verdict: DATA-BOUND
 
 The retrained multicolor dynamics (`outputs/2026-06-09/23-16-24`, predictor-only,
 `num_pred=1 f5 h3`, 9 epochs on 2,000 trajs) is ~**2× worse than stock in BOTH
@@ -12,6 +52,7 @@ prediction regimes with a stock-normal compounding rate** — the signature of
 under-fitting, not exposure bias. The earlier "exposure bias / rollout-aware recipe
 needed" conclusion came from comparing our tf-1-step to stock's **free-rollout**
 baseline (14.5/12.2) instead of stock's tf-1-step (8.0/7.6) — a regime mix-up.
+**This was wrong** — see the final verdict above; the data fix did not move block-tf.
 
 ## Evidence
 
