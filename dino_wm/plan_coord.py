@@ -76,7 +76,33 @@ class CoordPlanWorkspace(PlanWorkspace):
         return init, goal
 
     def prepare_targets(self):
-        init_states, goal_states = self._load_held_out_specs()
+        init_states, goal_states = self._load_held_out_specs()        # goal block@spec, pusher@start
+        i0 = np.asarray(init_states, dtype=np.float64)
+        gs = np.asarray(goal_states, dtype=np.float64)
+        # deployable contact-pusher proxy: where the pusher plausibly ENDS UP after pushing
+        # the block to the spec (computed from block_start + spec, both known at plan time).
+        contact = gs[:, 0:2].copy()
+        for i in range(len(gs)):
+            p = contact_pusher_pose(i0[i, 2:4], gs[i, 2:5])
+            if p is not None:
+                contact[i] = p
+        # FRAME-CONSTRUCTION FIX (goal_pusher=contact, default): render the goal frame with
+        # the pusher AT this contact pose near the goal block, not @start. DINOv2 all-to-all
+        # attention bakes the pusher's position INTO the block tokens before any energy-time
+        # mask, so a pusher@start ("hide"-class) goal frame gives block tokens that never match
+        # a reachable end-state (pusher@contact-near-B) -> latent off the dynamics' reachable
+        # manifold -> CEM exploits model error (latent reached, block not; SR 0). Contact
+        # restores the reachable-end-state context. (goal_pusher=start reproduces the broken
+        # teleport control.) The block stays @spec, so block-only success is unchanged; the
+        # pusher lives only in the target-construction frame and is masked at plan time, so
+        # deployability holds.
+        gp_mode = self.coord.get("goal_pusher", "contact")
+        if gp_mode == "contact":
+            goal_states = goal_states.copy()
+            goal_states[:, 0:2] = contact
+        elif gp_mode != "start":
+            raise ValueError(f"coord.goal_pusher must be 'contact' or 'start', got {gp_mode!r}")
+
         obs_0, state_0 = self.env.prepare(self.eval_seed, init_states)
         obs_g, state_g = self.env.prepare(self.eval_seed, goal_states)
         self.obs_0 = {k: np.expand_dims(v, axis=1) for k, v in obs_0.items()}
@@ -84,22 +110,14 @@ class CoordPlanWorkspace(PlanWorkspace):
         self.state_0 = state_0
         self.state_g = state_g
         self.gt_actions = None
-        # Deployable masked energy drops the UNION of two pusher positions (matches the
-        # validated plan.py mask): (1) the pusher in the GOAL latent -- the teleport keeps
-        # it at START; and (2) a deployable proxy for where the pusher ENDS UP after the
-        # push -- a plausible contact pose at the goal block, computed from (block_start,
-        # block_goal=spec), both known at plan time. Masking only (1) leaves the rollout's
-        # end-of-push pusher (near the goal block) UNMASKED, penalizing the correct push.
-        s0 = np.asarray(state_0, dtype=np.float64)
+        # Deployable masked energy drops the UNION of the goal-frame pusher (now @contact under
+        # goal_pusher=contact) and the end-of-push proxy (~same pose) -- both near the goal block.
         sg = np.asarray(state_g, dtype=np.float64)
-        self.goal_pusher_xy = sg[:, 0:2].copy()                       # pusher in the goal teleport frame
-        real = sg[:, 0:2].copy()
-        for i in range(len(sg)):
-            p = contact_pusher_pose(s0[i, 2:4], sg[i, 2:5])           # deployable end-of-push proxy
-            if p is not None:
-                real[i] = p
-        self.real_pusher_xy = real
+        self.goal_pusher_xy = sg[:, 0:2].copy()
+        self.real_pusher_xy = contact.copy()
         self.coord_specs = sg[:, 2:5].copy()                          # (N,3) block@spec
+        print(f"[coord] goal_pusher={gp_mode}: goal-frame pusher rendered at "
+              f"{'contact-near-B' if gp_mode == 'contact' else 'start (teleport control)'}")
 
     # --- goal-latent override (bridge / swapped_spec / random) ----------------
     def _load_coord_g(self):

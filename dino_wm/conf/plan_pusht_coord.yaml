@@ -53,6 +53,9 @@ planner:
 coord:
   data_path: ${oc.env:DATASET_DIR}/pusht_coord   # held-out (init_state, spec) eval set
   split: test                       # evaluate on the held-out test specs (novel pose pairs)
+  goal_pusher: contact              # contact (FIX: render goal frame with pusher@contact-near-B,
+                                    #   the reachable-end-state context the dynamics expects) |
+                                    #   start (teleport control: pusher@start = unreachable "hide"-class)
   max_goal_dist: null               # px; if set, keep only specs within this A->B distance (reachability subset)
   mask_tag: ""                      # e.g. _masked for the run dir name
   bridge_ckpt: null                 # BridgeG (cond_mode=coord) ckpt for goal_source=bridge/swapped_spec
