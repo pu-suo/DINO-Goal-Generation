@@ -1,0 +1,59 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: plan_outputs/${now:%Y%m%d%H%M%S}_coord_${model_name}_${goal_source}${coord.mask_tag}
+
+# --- model: shipped PushT dynamics (frozen) reused on the clean single-T scene ---
+ckpt_base_path: ./checkpoints      # ${ckpt_base_path}/outputs/<model_name>
+model_name: pusht
+model_epoch: latest
+
+seed: 99
+n_evals: 30
+goal_H: 5
+n_plot_samples: 10
+goal_source: oracle                # oracle (real teleport latent) | bridge (g) | swapped_spec | random
+debug_dset_init: False
+goal_pusher_perturbation: real
+goal_pusher_offset: 40.0
+plan_eval_mode: false
+fast_tf32: false
+fast_sdpa: false
+# Deployable masked energy: objective.alpha=0 + mask_pusher=true (drop the goal-frame
+# pusher patches; teleport keeps the pusher at start so those are the patches to drop).
+mask_pusher: false
+mask_dilation: 0
+pose_only_success: true            # block-only pose gate (pos<20px AND |ang|<20deg); ignore the manipulator
+
+objective:
+  _target_: planning.objectives.create_objective_fn
+  alpha: 1                          # set 0 for the deployable masked run
+  base: 2
+  mode: last
+
+planner:
+  _target_: planning.mpc.MPCPlanner
+  max_iter: 10
+  n_taken_actions: 5
+  sub_planner:
+    target: planning.cem.CEMPlanner
+    horizon: 5
+    topk: 30
+    num_samples: 300
+    var_scale: 1
+    opt_steps: 30
+    eval_every: 1
+    skip_succeeded: false
+    traj_chunk: 1
+  name: mpc_cem
+
+# --- coordinate (clean-scene) settings ---------------------------------------
+coord:
+  data_path: ${oc.env:DATASET_DIR}/pusht_coord   # held-out (init_state, spec) eval set
+  split: test                       # evaluate on the held-out test specs (novel pose pairs)
+  max_goal_dist: null               # px; if set, keep only specs within this A->B distance (reachability subset)
+  mask_tag: ""                      # e.g. _masked for the run dir name
+  bridge_ckpt: null                 # BridgeG (cond_mode=coord) ckpt for goal_source=bridge/swapped_spec
+                                    #   e.g. outputs/bridge/g_coord/g_best.pth (absolute path preferred)
