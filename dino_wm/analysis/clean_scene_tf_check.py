@@ -56,7 +56,7 @@ def normalize(vis, act_raw, proprio_raw, fs, device):
 
 @torch.no_grad()
 def block_err(wm, env, states5_full, states7, act, nh, fs, tfm, device):
-    S = states7.shape[0]
+    S = states7.shape[0] // fs          # subsampled frame count (states7 is S*fs long)
     vis = render_window(env, states5_full[: S * fs : fs], tfm)
     st = states7[: S * fs : fs]
     proprio_raw = st[:, [0, 1, 5, 6]]
