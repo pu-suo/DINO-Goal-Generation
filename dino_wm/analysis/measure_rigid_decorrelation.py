@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datasets.rigid_goal_common import (
     traj_uses_wall, sample_valid_transform, make_language, REGION_BOUNDS,
 )
-from metrics.regional_success import block_cell, REGION_NCELLS
+from metrics.regional_success import block_cell, block_centroid, REGION_NCELLS
 
 
 def circ_corr(a, b):
@@ -68,7 +68,8 @@ def main():
         s0, sT = tf[0], tf[L - 1]
         lang = make_language(s0, sT)
         recs.append((s0[2], s0[3], s0[4], sT[2], sT[3], sT[4],
-                     block_cell(s0[2:4]), lang["region_cell"], lang["rel_rot_deg"]))
+                     block_cell(block_centroid(s0[2:4], s0[4])),  # start cell on centroid too
+                     lang["region_cell"], lang["rel_rot_deg"]))
         if len(recs) >= args.n_max:
             break
 

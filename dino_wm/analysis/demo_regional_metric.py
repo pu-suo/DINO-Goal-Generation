@@ -18,8 +18,11 @@ from matplotlib.patches import Polygon as MplPolygon, Rectangle
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from metrics.regional_success import (
-    regional_success, block_cell, region_name, REGION_BOUNDS, REGION_NCELLS, ANG_TOL,
+    regional_success, block_cell, block_centroid, region_name,
+    REGION_BOUNDS, REGION_NCELLS, ANG_TOL,
 )
+def goal_cell_of(state):  # region keyed on the block centroid (matches the metric)
+    return block_cell(block_centroid(state[2:4], state[4]))
 
 # --- stock single-point gate (faithful copy of PushTWrapper.eval_state) -------
 def stock_success(goal_state, cur_state):
@@ -53,7 +56,7 @@ CASES = [
 
 print("=" * 108)
 print("goal block origin (%.0f,%.0f) angle %.1fdeg -> region %s  cell %s" % (
-    GOAL[2], GOAL[3], np.degrees(GOAL[4]), region_name(block_cell(GOAL[2:4])), block_cell(GOAL[2:4])))
+    GOAL[2], GOAL[3], np.degrees(GOAL[4]), region_name(goal_cell_of(GOAL)), block_cell(GOAL[2:4])))
 print("ANG_TOL = %.0f deg | partition %dx%d over %s" % (
     np.degrees(ANG_TOL), REGION_NCELLS, REGION_NCELLS, REGION_BOUNDS))
 print("=" * 108)
@@ -76,8 +79,8 @@ print("-" * 108)
 
 # --- dedicated boundary-straddle demo (the honest regional limitation) --------
 # Goal sits 5px from the x=200 cell edge; achieved is 10px away but ACROSS it.
-g_b = st(0, 0, 195, 250, 0.30)   # cell (0,1) "middle-left"
-c_b = st(0, 0, 205, 250, 0.30)   # cell (1,1) "middle-center"
+g_b = st(0, 0, 195, 250, 0.0)    # theta=0 so centroid_x==origin_x
+c_b = st(0, 0, 205, 250, 0.0)    # 10px away but ACROSS the x=200 edge
 rb = regional_success(g_b, c_b)
 sb_ok, sb_pos, sb_ang = stock_success(g_b, c_b)
 print("BOUNDARY STRADDLE (separate goal near a cell edge):")
@@ -95,7 +98,7 @@ fig, ax = plt.subplots(figsize=(8, 8))
 lo, hi = REGION_BOUNDS
 step = (hi - lo) / REGION_NCELLS
 # shade the goal cell
-gc = block_cell(GOAL[2:4])
+gc = goal_cell_of(GOAL)
 ax.add_patch(Rectangle((lo + gc[0]*step, lo + gc[1]*step), step, step,
                         facecolor="gold", alpha=0.18, zorder=0))
 # grid lines + region names

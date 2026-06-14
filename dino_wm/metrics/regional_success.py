@@ -52,12 +52,27 @@ REGION_BOUNDS = (100.0, 400.0)   # (lo, hi); same range for x and y
 REGION_NCELLS = 3                # NxN grid (3 -> 9 regions)
 ANG_TOL = np.pi / 9              # 20 deg (== stock gate; ~half a 40-deg bucket)
 
+# Region is keyed on the block's AREA CENTROID (what a viewer reads off the image),
+# per the task spec ("the region the goal block CENTROID falls in"), NOT the body
+# origin. For the scale-30 T the centroid sits up the stem from the origin by an
+# exact constant: rect1(bar A=3600, cy=15) + rect2(stem A=2700, cy=75) over A=6300
+# -> local (0, 40.714). Hardcoded so this module stays pure-numpy (no shapely).
+_T_CENTROID_LOCAL = np.array([0.0, 256500.0 / 6300.0])  # (0, 40.714286)
+
 # Provisional names, col index 0..N-1 = x left->right, row index 0..N-1 = y.
 # NOTE: which row is "upper" depends on the render y convention -- confirm in
 # Part 1 against an actual frame before trusting these strings. Success uses
 # the integer cell, not the name, so this does not affect correctness.
 _COL_NAMES = ("left", "center", "right")
 _ROW_NAMES = ("top", "middle", "bottom")   # provisional; verify y-up/down
+
+
+def block_centroid(block_xy, theta):
+    """World-frame area centroid of the T at (block_xy, theta). Same rotation
+    convention as tee_world_polygon (world = origin + R(theta) @ local)."""
+    c, s = np.cos(float(theta)), np.sin(float(theta))
+    R = np.array([[c, -s], [s, c]])
+    return np.asarray(block_xy, dtype=np.float64) + R @ _T_CENTROID_LOCAL
 
 
 def block_cell(xy, bounds=REGION_BOUNDS, ncells=REGION_NCELLS):
@@ -99,8 +114,9 @@ def regional_success(goal_state, cur_state, bounds=REGION_BOUNDS,
     """
     goal_state = np.asarray(goal_state, dtype=np.float64)
     cur_state = np.asarray(cur_state, dtype=np.float64)
-    goal_cell = block_cell(goal_state[2:4], bounds, ncells)
-    cur_cell = block_cell(cur_state[2:4], bounds, ncells)
+    # region keyed on the block AREA CENTROID (cols 2:4 origin + angle col 4)
+    goal_cell = block_cell(block_centroid(goal_state[2:4], goal_state[4]), bounds, ncells)
+    cur_cell = block_cell(block_centroid(cur_state[2:4], cur_state[4]), bounds, ncells)
     pos_ok = (goal_cell == cur_cell)
     ad = angle_diff(cur_state[4], goal_state[4])
     ang_ok = ad < ang_tol

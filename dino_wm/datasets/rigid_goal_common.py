@@ -28,7 +28,7 @@ import shapely.geometry as sg
 
 from env.pusht.multicolor_common import tee_world_vertices, tee_world_polygon, TEE_SCALE
 from metrics.regional_success import (  # SHARED partition
-    block_cell, region_name, angle_diff, REGION_BOUNDS,
+    block_cell, block_centroid, region_name, angle_diff, REGION_BOUNDS,
 )
 
 # --- scene constants (sim-512) ----------------------------------------------
@@ -208,8 +208,7 @@ def make_language(start_row, goal_row):
     & goal. Region uses the SHARED block_cell partition; rotation is the signed
     relative rotation. Returns a dict; the metric/region and language can't drift
     because both call block_cell()."""
-    goal_xy = (goal_row[2], goal_row[3])
-    cell = block_cell(goal_xy)
+    cell = block_cell(block_centroid(goal_row[2:4], goal_row[4]))   # centroid, not origin
     rel = relative_rotation_deg(start_row, goal_row)
     sign = 1 if rel >= 0 else -1
     mag = abs(rel)

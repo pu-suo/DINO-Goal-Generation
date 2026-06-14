@@ -14,7 +14,7 @@ from datasets.rigid_goal_common import (
     make_language, relative_rotation_deg, block_extent, WALL_LO, WALL_HI, FRAME_CENTER,
 )
 from env.pusht.multicolor_common import tee_world_polygon, TEE_SCALE
-from metrics.regional_success import block_cell
+from metrics.regional_success import block_cell, block_centroid
 
 DEV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_devdata", "pusht_noise_val")
 states = torch.load(os.path.join(DEV, "states.pth")).double().numpy()
@@ -95,7 +95,8 @@ th2, t2 = 1.1, np.array([-30.0, 40.0])
 s0 = apply_se2(base[0], th2, t2); sT = apply_se2(base[L - 1], th2, t2)
 lang = make_language(s0, sT)
 print(f"   text: {lang['text']!r}")
-check("should-PASS: language region == block_cell(goal)", lang["region_cell"] == block_cell(sT[2:4]))
+check("should-PASS: language region == block_cell(goal CENTROID)",
+      lang["region_cell"] == block_cell(block_centroid(sT[2:4], sT[4])))
 check("should-PASS: language rotation == relative_rotation(start,goal)",
       abs(lang["rel_rot_deg"] - relative_rotation_deg(s0, sT)) < 1e-9)
 # relative rotation PRESERVED from the original (reachability-by-construction)
@@ -103,8 +104,9 @@ rel_orig = relative_rotation_deg(base[0], base[L - 1])
 check(f"should-PASS: rel-rotation preserved by transform (orig {rel_orig:.1f} == tf {lang['rel_rot_deg']:.1f})",
       abs(rel_orig - lang["rel_rot_deg"]) < 1e-6)
 # should-FAIL: a WRONG language (rolled region) must NOT match the goal
-wrong_cell = (block_cell(sT[2:4])[0] ^ 1, block_cell(sT[2:4])[1])  # flip a bit -> different cell
-check("should-FAIL(mismatch detected): a wrong region != goal cell", wrong_cell != block_cell(sT[2:4]))
+gc = block_cell(block_centroid(sT[2:4], sT[4]))
+wrong_cell = (gc[0] ^ 1, gc[1])  # flip a bit -> different cell
+check("should-FAIL(mismatch detected): a wrong region != goal cell", wrong_cell != gc)
 
 print("\n" + "=" * 60)
 npass = sum(v for _, v in results)
