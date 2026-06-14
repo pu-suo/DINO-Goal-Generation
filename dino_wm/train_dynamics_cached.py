@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--max_traj", type=int, default=None, help="train on first k trajs (scaling curve)")
     ap.add_argument("--stride_one", action="store_true", help="use per-frame StrideOneLatentDataset (full phase aug; needs dyn_latents_pf)")
     ap.add_argument("--clean", action="store_true", help="use variable-length CleanDynLatentDataset (pusht_noise clean retrain; dyn_latents_clean)")
+    ap.add_argument("--lr", type=float, default=None, help="override predictor & action/proprio LR (default: cfg predictor_lr=5e-4; use ~1e-4 for a LIGHT warm-start adaptation)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -69,9 +70,11 @@ def main():
     model = load_model(ckpt, model_cfg, model_cfg.num_action_repeat, device=device)
     model.to(device)
     start_epoch = int(torch.load(ckpt, map_location="cpu").get("epoch", 0))
-    # cached path is predictor-only; forward_latent never uses the decoder, so drop it
-    # (the shipped pusht ckpt carries one; the saved ckpt stays predictor-only and plan
-    # reloads the VQ-VAE decoder from decoder_path via the copied hydra.yaml).
+    # forward_latent is predictor-only and REQUIRES model.decoder is None to run, but the
+    # copied hydra.yaml keeps has_decoder=true -> load_model would raise on reload if the
+    # saved ckpt had no decoder. So stash the (untrained) VQ-VAE decoder and re-save it
+    # verbatim in every checkpoint, while nulling it on the live model for training.
+    saved_decoder = model.decoder
     model.decoder = None
     for p in model.encoder.parameters():
         p.requires_grad_(False)
@@ -87,11 +90,14 @@ def main():
     vl = DataLoader(va, batch_size=args.batch_size, shuffle=False,
                     num_workers=args.num_workers, pin_memory=True)
 
-    predictor_opt = torch.optim.AdamW(model.predictor.parameters(),
-                                      lr=model_cfg.training.predictor_lr)
+    pred_lr = args.lr if args.lr is not None else model_cfg.training.predictor_lr
+    act_lr = args.lr if args.lr is not None else model_cfg.training.action_encoder_lr
+    print(f"[lr] predictor_lr={pred_lr} action_encoder_lr={act_lr}"
+          + ("  (overridden for light warm-start)" if args.lr is not None else ""))
+    predictor_opt = torch.optim.AdamW(model.predictor.parameters(), lr=pred_lr)
     act_opt = torch.optim.AdamW(itertools.chain(model.action_encoder.parameters(),
                                                 model.proprio_encoder.parameters()),
-                                lr=model_cfg.training.action_encoder_lr)
+                                lr=act_lr)
 
     out = Path(args.out); (out / "checkpoints").mkdir(parents=True, exist_ok=True)
     OmegaConf.save(model_cfg, out / "hydra.yaml")  # so plan/dynamics_check resolve it
@@ -116,7 +122,8 @@ def main():
         hist.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
 
         ck = {"predictor": model.predictor, "action_encoder": model.action_encoder,
-              "proprio_encoder": model.proprio_encoder, "epoch": epoch,
+              "proprio_encoder": model.proprio_encoder, "decoder": saved_decoder,
+              "epoch": epoch,
               "predictor_optimizer": predictor_opt, "action_encoder_optimizer": act_opt}
         torch.save(ck, out / "checkpoints" / "model_latest.pth")
         torch.save(ck, out / "checkpoints" / f"model_{epoch}.pth")
