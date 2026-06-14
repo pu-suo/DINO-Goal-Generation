@@ -10,6 +10,7 @@ class PushTWrapper(PushTEnv):
             with_velocity=True,
             with_target=True,
             pose_only_success=False,
+            success_mode="pose",
             **kwargs,
         ):
         super().__init__(
@@ -20,6 +21,9 @@ class PushTWrapper(PushTEnv):
         self.action_dim = self.action_space.shape[0]
         # Phase-0 fake-pusher test: block-only success (ignore the manipulator).
         self.pose_only_success = pose_only_success
+        # success_mode: "pose" (stock single-point gate) | "regional" (language-goal
+        # regional metric: block centroid in the same 3x3 cell + |dangle|<pi/9).
+        self.success_mode = success_mode
     
     def sample_random_init_goal_states(self, seed):
         """
@@ -64,6 +68,17 @@ class PushTWrapper(PushTEnv):
         Return True if the goal is reached
         [agent_x, agent_y, T_x, T_y, angle, agent_vx, agent_vy]
         """
+        # Regional (language-goal) mode: block CENTROID in the same 3x3 cell as the
+        # goal + orientation within pi/9. Used by the rigid/language pipeline.
+        if getattr(self, "success_mode", "pose") == "regional":
+            from metrics.regional_success import regional_success
+            r = regional_success(np.asarray(goal_state), np.asarray(cur_state))
+            return {
+                "success": r["success"],
+                "state_dist": float(np.linalg.norm(goal_state[2:4] - cur_state[2:4])),
+                "pos_ok": float(r["pos_ok"]),
+                "ang_ok": float(r["ang_ok"]),
+            }
         # if position difference is < 20, and angle difference < np.pi/9, then success
         if getattr(self, "pose_only_success", False):
             # block-only: ignore the manipulator (the fake-pusher test renders a
