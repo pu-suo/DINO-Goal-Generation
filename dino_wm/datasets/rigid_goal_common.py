@@ -27,7 +27,9 @@ import numpy as np
 import shapely.geometry as sg
 
 from env.pusht.multicolor_common import tee_world_vertices, tee_world_polygon, TEE_SCALE
-from metrics.regional_success import block_cell, region_name, angle_diff  # SHARED partition
+from metrics.regional_success import (  # SHARED partition
+    block_cell, region_name, angle_diff, REGION_BOUNDS,
+)
 
 # --- scene constants (sim-512) ----------------------------------------------
 WALL_LO, WALL_HI = 5.0, 506.0      # wall-box segment coords (pusht_env.py:765-771)
@@ -60,6 +62,37 @@ def effective_matrix(theta, t, center=FRAME_CENTER):
     R = np.array([[c, -s], [s, c]])
     t_eff = center - R @ center + np.asarray(t, float)
     return rigid_matrix(theta, t_eff)
+
+
+def _rot(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+def sample_valid_transform(traj, seq_len, rng, goal_bounds=REGION_BOUNDS,
+                           rot_range=(-np.pi, np.pi), pad=2.0, max_tries=300,
+                           center=FRAME_CENTER):
+    """Sample a rigid SE(2) that places the GOAL block origin uniformly in
+    `goal_bounds` (decorrelating the goal's absolute pose) with a uniform extra
+    rotation, then accept only if the FULL transformed path is valid (guard 1.4).
+
+    Goal-uniform placement: solve t so transform(orig_goal_xy) == sampled target.
+    Returns (theta, t, transformed_states) or None if no valid transform found.
+    """
+    o_goal_xy = np.asarray(traj[int(seq_len) - 1, 2:4], float)
+    lo, hi = goal_bounds
+    center = np.asarray(center, float)
+    for _ in range(int(max_tries)):
+        theta = float(rng.uniform(*rot_range))
+        gx, gy = rng.uniform(lo, hi), rng.uniform(lo, hi)
+        R = _rot(theta)
+        # transform(p) = R(p-center)+center+t ; want == (gx,gy) at p=o_goal_xy
+        t = np.array([gx, gy]) - center - R @ (o_goal_xy - center)
+        tf = apply_se2(traj, theta, t, center)
+        ok, _, _ = traj_path_valid(tf, seq_len, pad)
+        if ok:
+            return theta, t, tf
+    return None
 
 
 def apply_se2(states, theta, t, center=FRAME_CENTER):
