@@ -56,6 +56,60 @@ class DynLatentSliceDataset(Dataset):
         return {"visual": visual, "proprio": proprio}, act, state
 
 
+class CleanDynLatentDataset(Dataset):
+    """Variable-length grid-stride cached-latent dataset for the pusht_noise CLEAN
+    retrain (scripts/cache_clean_dyn_latents.py). Like DynLatentSliceDataset but each
+    trajectory has its own length (padded storage), so windows are bounded per-traj by
+    seq_lengths and never read padded latents or padded trailing actions.
+
+    A grid-aligned window at model-step s (env-frame s*fs) is valid iff
+    (s+num_frames)*fs <= L_i (all num_frames*fs env-frame actions are real) -- exactly
+    TrajSlicerDataset's window [start, start+num_frames*fs) restricted to grid starts.
+        visual : visual[i, s:s+nf]                              (nf, 196, 384)
+        act    : actions[i, s*fs:(s+nf)*fs] -> (nf, fs*adim)
+        proprio: proprio[i, s:s+nf];  state: states[i, s:s+nf]
+    """
+    def __init__(self, dyn_dir, num_frames, max_traj=None):
+        d = Path(dyn_dir)
+        self.meta = json.load(open(d / "meta.json"))
+        self.fs = self.meta["frameskip"]
+        self.num_frames = num_frames
+        self.visual = torch.load(d / "visual.pth", mmap=True)
+        self.proprio = torch.load(d / "proprio.pth")
+        self.actions = torch.load(d / "actions.pth")
+        self.states = torch.load(d / "states.pth")
+        self.seq_lengths = torch.load(d / "seq_lengths.pth").numpy()
+        if max_traj is not None:
+            self.visual = self.visual[:max_traj].contiguous()
+            self.proprio, self.actions, self.states = (
+                self.proprio[:max_traj], self.actions[:max_traj], self.states[:max_traj])
+            self.seq_lengths = self.seq_lengths[:max_traj]
+        self.action_dim = self.actions.shape[-1] * self.fs
+        self.proprio_dim = self.proprio.shape[-1]
+        self.state_dim = self.states.shape[-1]
+        nf, fs = num_frames, self.fs
+        win = nf * fs
+        self.slices = np.array(
+            [(i, s) for i in range(len(self.seq_lengths))
+             for s in range(max(0, (int(self.seq_lengths[i]) - win) // fs + 1))],
+            dtype=np.int64).reshape(-1, 2)
+        n_short = int((self.seq_lengths < win).sum())
+        print(f"CleanDynLatentDataset: {len(self.seq_lengths)} trajs -> {len(self.slices)} "
+              f"windows (var-len, grid-stride; {n_short} trajs too short for nf*fs={win})")
+
+    def __len__(self):
+        return len(self.slices)
+
+    def __getitem__(self, idx):
+        i, s = (int(x) for x in self.slices[idx])
+        nf, fs = self.num_frames, self.fs
+        visual = self.visual[i, s:s + nf].float()
+        proprio = self.proprio[i, s:s + nf]
+        act = rearrange(self.actions[i, s * fs:(s + nf) * fs], "(n f) d -> n (f d)", n=nf)
+        state = self.states[i, s:s + nf]
+        return {"visual": visual, "proprio": proprio}, act, state
+
+
 class StrideOneLatentDataset(Dataset):
     """Per-frame cached-latent dataset that reproduces datasets/traj_dset.py
     TrajSlicerDataset EXACTLY (stride-1 window starts -> full phase augmentation, all

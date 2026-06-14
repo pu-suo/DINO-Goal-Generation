@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from datasets.dyn_latent_dset import DynLatentSliceDataset, StrideOneLatentDataset
+from datasets.dyn_latent_dset import DynLatentSliceDataset, StrideOneLatentDataset, CleanDynLatentDataset
 from plan import load_model
 from utils import move_to_device
 
@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--max_traj", type=int, default=None, help="train on first k trajs (scaling curve)")
     ap.add_argument("--stride_one", action="store_true", help="use per-frame StrideOneLatentDataset (full phase aug; needs dyn_latents_pf)")
+    ap.add_argument("--clean", action="store_true", help="use variable-length CleanDynLatentDataset (pusht_noise clean retrain; dyn_latents_clean)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -68,12 +69,17 @@ def main():
     model = load_model(ckpt, model_cfg, model_cfg.num_action_repeat, device=device)
     model.to(device)
     start_epoch = int(torch.load(ckpt, map_location="cpu").get("epoch", 0))
-    assert model.decoder is None, "cached path is predictor-only (has_decoder must be false)"
+    # cached path is predictor-only; forward_latent never uses the decoder, so drop it
+    # (the shipped pusht ckpt carries one; the saved ckpt stays predictor-only and plan
+    # reloads the VQ-VAE decoder from decoder_path via the copied hydra.yaml).
+    model.decoder = None
     for p in model.encoder.parameters():
         p.requires_grad_(False)
 
     num_frames = model_cfg.num_hist + model_cfg.num_pred
-    DS = StrideOneLatentDataset if args.stride_one else DynLatentSliceDataset
+    DS = (CleanDynLatentDataset if args.clean
+          else StrideOneLatentDataset if args.stride_one
+          else DynLatentSliceDataset)
     tr = DS(Path(args.dyn_dir) / "train", num_frames, max_traj=args.max_traj)
     va = DS(Path(args.dyn_dir) / "val", num_frames)
     tl = DataLoader(tr, batch_size=args.batch_size, shuffle=True, drop_last=True,
