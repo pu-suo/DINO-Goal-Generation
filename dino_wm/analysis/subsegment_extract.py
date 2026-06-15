@@ -277,16 +277,30 @@ def main():
     act_i = data["rel"][t_s, i_s]
     act_dir = np.arctan2(act_i[:, 1], act_i[:, 0])
     moving = np.linalg.norm(vel_i, axis=1) > 1e-3
+    # VISUALLY-AVAILABLE leak channel: g sees a STATIC start frame, so it cannot read
+    # velocity directly -- the readable cue is the pusher->block contact geometry (which
+    # side the pusher sits on). Push direction ~ (block - agent). This is the honest
+    # proxy for what g could exploit; the Part-D ablation tests the true leak.
+    ab = data["states5"][t_s, i_s, 2:4] - data["states5"][t_s, i_s, 0:2]   # block - agent
+    contact_dir = np.arctan2(ab[:, 1], ab[:, 0])
+    pb_dist = np.linalg.norm(ab, axis=1)
+    in_contact = pb_dist < 40.0     # pusher radius 15 + block extent; loose contact gate
     report["chosen"]["leak"] = {
+        "circ_corr_contact_dir_vs_goal_dir": circ_corr(contact_dir, goal_dir),
+        "circ_corr_contact_in_contact": circ_corr(contact_dir[in_contact], goal_dir[in_contact]) if in_contact.any() else float("nan"),
+        "mean_cos_contact_goal": float(np.mean(np.cos(contact_dir - goal_dir))),
+        "frac_in_contact_at_start": round(float(in_contact.mean()), 3),
         "circ_corr_vel_dir_vs_goal_dir": circ_corr(vel_dir[moving], goal_dir[moving]),
         "circ_corr_action_dir_vs_goal_dir": circ_corr(act_dir, goal_dir),
-        "mean_cos_vel_goal": float(np.mean(np.cos(vel_dir[moving] - goal_dir[moving]))) if moving.any() else float("nan"),
         "mean_cos_action_goal": float(np.mean(np.cos(act_dir - goal_dir))),
         "frac_pusher_moving_at_start": round(float(moving.mean()), 3),
     }
-    print(f"[leak] circ-corr(vel_dir, goal_dir)={report['chosen']['leak']['circ_corr_vel_dir_vs_goal_dir']:.3f}  "
-          f"circ-corr(action_dir, goal_dir)={report['chosen']['leak']['circ_corr_action_dir_vs_goal_dir']:.3f}  "
-          f"mean-cos(action,goal)={report['chosen']['leak']['mean_cos_action_goal']:.3f}")
+    lk = report["chosen"]["leak"]
+    print(f"[leak] VISUAL contact-dir->goal: circ-corr={lk['circ_corr_contact_dir_vs_goal_dir']:.3f} "
+          f"(in-contact {lk['circ_corr_contact_in_contact']:.3f}, {100*lk['frac_in_contact_at_start']:.0f}% in contact) "
+          f"mean-cos={lk['mean_cos_contact_goal']:.3f}")
+    print(f"[leak] (proxies) vel-dir->goal circ-corr={lk['circ_corr_vel_dir_vs_goal_dir']:.3f}  "
+          f"action-dir->goal circ-corr={lk['circ_corr_action_dir_vs_goal_dir']:.3f}")
 
     # A3: replay self-test on a random sample of survivors (n_replay)
     if len(sel) and args.n_replay > 0:
