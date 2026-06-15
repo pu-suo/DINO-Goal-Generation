@@ -80,6 +80,14 @@ def test_dual_bound():
     ok("keep disp just under D_max", m[1] == True)      # noqa: E712
     ok("reject disp over D_max", m[2] == False)         # noqa: E712 (SHOULD-FAIL)
     ok("reject rot over R_max", m[3] == False)          # noqa: E712 (SHOULD-FAIL)
+    # lower bound (meaningful motion = enough disp OR enough rot)
+    cand2 = dict(dp_mag=np.array([2., 2., 20., 2.]),
+                 drot=np.radians(np.array([1., 8., 1., 1.])))
+    m2 = dual_bound_mask(cand2, D_max=50.0, R_max_deg=12.0, D_min=15.0, R_min_deg=5.0)
+    ok("reject tiny disp AND tiny rot (degenerate)", m2[0] == False)   # noqa: E712 SHOULD-FAIL
+    ok("keep tiny disp but enough rot", m2[1] == True)                 # noqa: E712
+    ok("keep enough disp, tiny rot", m2[2] == True)                    # noqa: E712
+    ok("reject stay-put even within upper bound", m2[3] == False)      # noqa: E712 SHOULD-FAIL
 
 
 def test_bucketize():

@@ -93,9 +93,15 @@ def extract_candidates(data, h, stride=1):
     return dict(traj=traj, i=i, j=j, dp=dp, dp_mag=dp_mag, drot=drot)
 
 
-def dual_bound_mask(cand, D_max, R_max_deg):
-    """Keep candidates with block displacement < D_max px AND |rotation| < R_max deg."""
-    return (cand["dp_mag"] < D_max) & (np.abs(np.degrees(cand["drot"])) < R_max_deg)
+def dual_bound_mask(cand, D_max, R_max_deg, D_min=0.0, R_min_deg=0.0):
+    """Keep candidates within the reachable UPPER bound (|Dp|<D_max AND |Drot|<R_max)
+    AND above a MEANINGFUL-motion LOWER bound (|Dp|>=D_min OR |Drot|>=R_min) -- the
+    lower bound drops degenerate 'stay-put' windows (pusher not in contact) so the
+    language command is non-trivial. D_min=R_min=0 -> upper-bound-only (old behavior)."""
+    rot_deg = np.abs(np.degrees(cand["drot"]))
+    upper = (cand["dp_mag"] < D_max) & (rot_deg < R_max_deg)
+    lower = (cand["dp_mag"] >= D_min) | (rot_deg >= R_min_deg)
+    return upper & lower
 
 
 # --- buckets (provisional; Part B formalises naming) -------------------------
@@ -189,6 +195,8 @@ def main():
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--D_max", type=float, default=50.0, help="max block displacement px")
     ap.add_argument("--R_max", type=float, default=12.0, help="max |block rotation| deg")
+    ap.add_argument("--D_min", type=float, default=0.0, help="min block displacement px (meaningful-motion lower bound)")
+    ap.add_argument("--R_min", type=float, default=0.0, help="min |block rotation| deg (OR-combined with D_min)")
     ap.add_argument("--sweep_h", action="store_true", help="report Dp/Drot dists across h")
     ap.add_argument("--n_replay", type=int, default=400, help="sub-segments to replay-test")
     ap.add_argument("--seed", type=int, default=0)
@@ -208,7 +216,7 @@ def main():
     report["sweep"] = {}
     for h in h_list:
         c = extract_candidates(data, h, args.stride)
-        m = dual_bound_mask(c, args.D_max, args.R_max)
+        m = dual_bound_mask(c, args.D_max, args.R_max, args.D_min, args.R_min)
         report["sweep"][h] = {
             "candidates": int(len(c["dp_mag"])),
             "dp_px": pct(c["dp_mag"]),
@@ -223,12 +231,20 @@ def main():
 
     # --- chosen h: survivors, buckets, replay, leak --------------------------
     c = extract_candidates(data, args.h, args.stride)
-    m = dual_bound_mask(c, args.D_max, args.R_max)
+    m = dual_bound_mask(c, args.D_max, args.R_max, args.D_min, args.R_min)
     sel = np.where(m)[0]
     print(f"\n[chosen h={args.h}] survivors={len(sel)} "
-          f"(D_max={args.D_max}px, R_max={args.R_max}deg)")
+          f"(D in [{args.D_min},{args.D_max}]px, |R| in [{args.R_min},{args.R_max}]deg "
+          f"upper-AND lower-OR)")
     report["chosen"] = {"h": args.h, "D_max": args.D_max, "R_max": args.R_max,
-                        "survivors": int(len(sel))}
+                        "D_min": args.D_min, "R_min": args.R_min,
+                        "survivors": int(len(sel)),
+                        "survivor_dp_px": pct(c["dp_mag"][sel]),
+                        "survivor_drot_deg": pct(np.abs(np.degrees(c["drot"][sel])))}
+    print(f"[chosen] survivor dp p50/p90={report['chosen']['survivor_dp_px'].get('p50')}/"
+          f"{report['chosen']['survivor_dp_px'].get('p90')}px  "
+          f"drot p50/p90={report['chosen']['survivor_drot_deg'].get('p50')}/"
+          f"{report['chosen']['survivor_drot_deg'].get('p90')}deg")
 
     # A4: within-bucket spread of continuous (Dp, Drot) among survivors
     dp_s, drot_s = c["dp"][sel], c["drot"][sel]
