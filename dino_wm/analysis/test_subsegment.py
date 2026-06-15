@@ -128,15 +128,19 @@ def test_replay(data_path):
     # (this validates env config + action indexing + determinism). Threshold generous
     # to absorb float/pymunk noise but tight enough to catch a wrong config.
     ok("full-from-0 replay reproduces states (p90<5px)", np.percentile(full_pos, 90) < 5.0)
-    # SHOULD-FAIL: replaying ZERO actions must NOT reach a moved goal (sanity that the
-    # test can detect non-reachability -- else 'reachable' is meaningless).
-    t, i, j = int(cand["traj"][samp[0]]), int(cand["i"][samp[0]]), int(cand["j"][samp[0]])
+    # SHOULD-FAIL: replaying ZERO actions must NOT reach a MOVED goal (sanity that the
+    # test can detect non-reachability -- else 'reachable' is meaningless). Pick a
+    # candidate where the block genuinely moves >20px, else the guard is vacuous.
+    moves = cand["dp_mag"][samp]
+    pick = samp[int(np.argmax(moves))]
+    t, i, j = int(cand["traj"][pick]), int(cand["i"][pick]), int(cand["j"][pick])
     true_end = data["states5"][t, j, 2:4]
     zero_pred = replay_end_pose(env, state7(data, t, i), np.zeros((j - i, 2)))
     moved = float(np.linalg.norm(data["states5"][t, j, 2:4] - data["states5"][t, i, 2:4]))
     zero_err = float(np.linalg.norm(zero_pred[:2] - true_end))
-    print(f"  zero-action: block moved {moved:.1f}px in data, zero-action err {zero_err:.1f}px")
-    ok("zero-action replay does NOT reach a moved goal", zero_err > 10.0 or moved < 10.0)
+    print(f"  zero-action (moving seg): block moved {moved:.1f}px in data, zero-action err {zero_err:.1f}px")
+    ok("a moving sub-segment exists in sample (>20px)", moved > 20.0)
+    ok("zero-action replay does NOT reach the moved goal", zero_err > 10.0)
 
 
 def main():
