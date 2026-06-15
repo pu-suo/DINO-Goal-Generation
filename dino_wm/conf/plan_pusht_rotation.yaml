@@ -1,0 +1,56 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: plan_outputs/${now:%Y%m%d%H%M%S}_rotation_${model_name}_${goal_source}
+
+# REUSED clean dynamics (outputs/clean_retrain, block-TF 7.06). Override ckpt_base_path
+# to the dir holding outputs/<model_name>/.
+ckpt_base_path: ./checkpoints
+model_name: clean_retrain
+model_epoch: latest
+
+seed: 99
+n_evals: 40                       # stratified across the 5 rotation buckets (8 each)
+goal_H: 5
+n_plot_samples: 0                 # plot=False in perform_planning anyway
+goal_source: oracle               # oracle (deployable ceiling); bridge/swapped in Part 5
+debug_dset_init: False
+goal_pusher_perturbation: real
+goal_pusher_offset: 40.0
+plan_eval_mode: false
+fast_tf32: false
+fast_sdpa: false
+# Deployable masked energy: objective.alpha=0 + mask_pusher=true.
+mask_pusher: false
+mask_dilation: 1
+pose_only_success: false
+
+objective:
+  _target_: planning.objectives.create_objective_fn
+  alpha: 1                         # set 0 for the deployable masked run
+  base: 2
+  mode: last
+
+planner:
+  _target_: planning.mpc.MPCPlanner
+  max_iter: 10
+  n_taken_actions: 5
+  sub_planner:
+    target: planning.cem.CEMPlanner
+    horizon: 5
+    topk: 30
+    num_samples: 300
+    var_scale: 1
+    opt_steps: 30
+    eval_every: 1
+    skip_succeeded: false
+    traj_chunk: 1
+  name: mpc_cem
+
+# --- sub-segment rotation goals (raw clean) ----------------------------------
+subseg:
+  data_path: ${oc.env:DATASET_DIR}/pusht_subseg   # held-out test split (disjoint trajs)
+  split: test
+  stratify: true
