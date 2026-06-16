@@ -7,11 +7,15 @@ cd /workspace/langtable_kit
 LT=/workspace/envs/langtable/bin/python
 DW=/workspace/envs/dino_wm/bin/python
 TRAJ=/workspace/lt_traj_3k; CACHE=/workspace/lt_cache_3k; G2=/workspace/g2_3k; RO=/workspace/readout_3k
-EPISODES=${1:-190}   # 16 x 190 = 3040 traj
+EPISODES=${1:-102}   # 30 x 102 = 3060 traj
+NW=${2:-30}          # single-threaded workers (box has 32 cores); avoid BLAS/pybullet thread thrash
 
-echo "===[STAGE1 GEN]=== 16 workers x $EPISODES eps  $(date)"
-mkdir -p $TRAJ
-for k in $(seq 0 15); do $LT -u lt_dump_traj.py --episodes $EPISODES --seed $k --out_dir $TRAJ > $TRAJ/gen_w$k.log 2>&1 & done
+echo "===[STAGE1 GEN]=== $NW workers x $EPISODES eps (1 thread/worker)  $(date)"
+rm -rf $TRAJ; mkdir -p $TRAJ
+for k in $(seq 0 $((NW-1))); do
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+    $LT -u lt_dump_traj.py --episodes $EPISODES --seed $k --out_dir $TRAJ > $TRAJ/gen_w$k.log 2>&1 &
+done
 wait
 NG=$(ls $TRAJ/w*_t*.npz 2>/dev/null | wc -l)
 echo "gen done: $NG traj files  $(date)"
