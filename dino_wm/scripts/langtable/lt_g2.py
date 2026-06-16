@@ -79,6 +79,8 @@ def main():
     ap.add_argument("--overfit_iters", type=int, default=300)
     ap.add_argument("--overfit_batch", type=int, default=8)
     ap.add_argument("--overfit_only", action="store_true")
+    ap.add_argument("--ckpt_every", type=int, default=0,
+                    help="save {out}/ckpt_e{e}.pth every N epochs (for mid-training D2 probing)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -158,6 +160,9 @@ def main():
             copy_l2 = torch.linalg.norm(copy_pred - copy_tgt, dim=-1).mean().item()
         print(f"  epoch {e}: val TF MSE={vloss.item():.5f}  TF patch-L2={patch_l2(pv,tv):.4f}  "
               f"(copy-last patch-L2={copy_l2:.4f})")
+        if args.ckpt_every and e % args.ckpt_every == 0:
+            torch.save({"model": model.state_dict()}, os.path.join(args.out, f"ckpt_e{e}.pth"))
+            print(f"    [ckpt] saved ckpt_e{e}.pth")
     torch.save({"model": model.state_dict()}, os.path.join(args.out, "model.pth"))
     tf_patchl2 = patch_l2(pv, tv)
 
