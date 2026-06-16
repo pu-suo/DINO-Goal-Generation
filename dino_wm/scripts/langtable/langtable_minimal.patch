@@ -1,0 +1,36 @@
+diff --git a/language_table/environments/oracles/plot.py b/language_table/environments/oracles/plot.py
+index f0d9144..1845056 100644
+--- a/language_table/environments/oracles/plot.py
++++ b/language_table/environments/oracles/plot.py
+@@ -19,7 +19,12 @@ import imageio
+ from matplotlib import patches
+ from matplotlib import pyplot as plt
+ import numpy as np
+-import tensorflow as tf
++# --- minimal-install patch (DINO-WM Language Table port): tensorflow removed;
++# plot.py only used tf for tf.io.gfile.GFile; shim to builtin open. ---
++import types as _types
++tf = _types.SimpleNamespace(
++    io=_types.SimpleNamespace(gfile=_types.SimpleNamespace(GFile=open)))
++# --- end patch ---
+ 
+ 
+ DEBUG_IMAGE_PATH = '/tmp/rrt_debug_img.png'
+diff --git a/language_table/environments/utils/utils_pybullet.py b/language_table/environments/utils/utils_pybullet.py
+index defc823..9368e02 100644
+--- a/language_table/environments/utils/utils_pybullet.py
++++ b/language_table/environments/utils/utils_pybullet.py
+@@ -28,7 +28,12 @@ from language_table.environments.utils.pose3d import Pose3d
+ import numpy as np
+ from scipy.spatial import transform
+ import six
+-import tensorflow as tf
++# --- minimal-install patch (DINO-WM Language Table port): tensorflow removed.
++# utils_pybullet only used tf for tf.io.gfile.GFile local file I/O; shim it to builtin open. ---
++import types as _types
++tf = _types.SimpleNamespace(
++    io=_types.SimpleNamespace(gfile=_types.SimpleNamespace(GFile=open)))
++# --- end patch ---
+ 
+ 
+ import pybullet
