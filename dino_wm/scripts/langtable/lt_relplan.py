@@ -55,6 +55,8 @@ def main():
     ap.add_argument("--elites", type=int, default=16)
     ap.add_argument("--n_ep", type=int, default=8)      # tiny for end-to-end pre-flight
     ap.add_argument("--n_d2", type=int, default=36)     # D2-preview over all val
+    ap.add_argument("--d2only", action="store_true",    # fast kill-criterion probe (skip CEM)
+                    help="D2 + round-trip only; skip the slow CEM. For mid-training checkpoint probing.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -186,6 +188,11 @@ def main():
     print(f"  success(dist<0.05) @ final: GT={np.mean(dg<RADIUS):.2f}  PRED={np.mean(dp<RADIUS):.2f}  REAL={np.mean(dr<RADIUS):.2f}")
     print(f"  dist-MAE vs GT:  PRED={np.abs(dp-dg).mean():.4f}u  REAL={np.abs(dr-dg).mean():.4f}u")
     print(f"  -> if PRED moving-err >> REAL moving-err, the DYNAMICS is the bottleneck (Risk #2), not R.")
+
+    if args.d2only:
+        print("[d2only] kill-criterion probe done -> read 'MOVING block A pos-err PRED' above "
+              f"(PASS target <= {RADIUS}u; REAL ceiling ~0.035u).")
+        return
 
     # ============== [3] end-to-end tiny CEM + [4] timing ==============
     print(f"=== PRE-FLIGHT [3] end-to-end tiny CEM (rel energy, lam={args.lam}) + [4] timing ===")
