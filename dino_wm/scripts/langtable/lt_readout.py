@@ -79,6 +79,24 @@ class Readout(nn.Module):
         conf = logit.softmax(-1)[..., :self.nblk].max(1).values  # (B,nblk) peak class-prob
         return pos, conf
 
+    def decode_hard(self, grid, tau=0.1):
+        """HARD-centroid decode: assign each patch to its top class FIRST (removes same-color
+        cross-talk that the soft-argmax leaks, e.g. red_moon<->red_pentagon), then centroid each
+        block's own patches. Soft-argmax fallback for blocks with no assigned patch (rare ~0.5%).
+        Fixes red_moon 0.11u->0.023u with no regression on the other 7. CEM is gradient-free so the
+        non-smoothness is fine."""
+        logit = self.forward(grid)                        # (B,196,K)
+        amax = logit.argmax(-1)                            # (B,196) top class per patch
+        oh = (amax.unsqueeze(-1) == torch.arange(self.nblk, device=grid.device)).float()  # (B,196,nblk)
+        cnt = oh.sum(1)                                    # (B,nblk)
+        pos = torch.einsum("bpk,pd->bkd", oh, self.centers) / cnt.clamp(min=1).unsqueeze(-1)
+        if (cnt == 0).any():                               # soft fallback for empty blocks
+            bl = logit[..., :self.nblk]
+            soft = (bl.transpose(1, 2) / tau).softmax(-1) @ self.centers
+            pos = torch.where((cnt == 0).unsqueeze(-1), soft, pos)
+        conf = logit.softmax(-1)[..., :self.nblk].max(1).values
+        return pos, conf
+
 
 # ---------------- data ----------------
 

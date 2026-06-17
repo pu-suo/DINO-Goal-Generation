@@ -33,6 +33,7 @@ def main():
     ap.add_argument("--cache", default="/workspace/lt_cache_3k")
     ap.add_argument("--out", default="/workspace/g2_3k_wide")
     ap.add_argument("--readout", default="/workspace/readout_3k/R.pth")
+    ap.add_argument("--init_base", default="")  # load saved wider 1-step base + skip phase 1 (resume after OOM)
     ap.add_argument("--num_hist", type=int, default=3)
     ap.add_argument("--depth", type=int, default=12)
     ap.add_argument("--heads", type=int, default=8)
@@ -43,6 +44,7 @@ def main():
     ap.add_argument("--roll_epochs", type=int, default=10)
     ap.add_argument("--roll_iters", type=int, default=600)
     ap.add_argument("--roll_batch", type=int, default=4)
+    ap.add_argument("--roll_accum", type=int, default=1)  # grad-accum: effective batch = roll_batch*roll_accum
     ap.add_argument("--roll_H", type=int, default=12)
     ap.add_argument("--n", type=int, default=150)
     ap.add_argument("--seed", type=int, default=0)
@@ -73,22 +75,27 @@ def main():
         v, p, act = sample_windows(c, nf, n, rng)
         return (torch.tensor(v, device=dev), torch.tensor(p, device=dev), torch.tensor(act, device=dev))
 
-    # ---------- phase 1: wider 1-step (teacher-forced) from scratch ----------
-    m = mk(); opt = torch.optim.AdamW(m.parameters(), lr=5e-4)
+    # ---------- phase 1: wider 1-step (teacher-forced) ----------
+    m = mk()
     print(f"WIDE model: depth={a.depth} heads={a.heads} mlp={a.mlp_dim} -> params={nparam(m)/1e6:.1f}M (vs 19M)")
-    for e in range(1, a.base_epochs + 1):
-        m.train(); tot = 0.0
-        for _ in range(a.base_iters):
-            loss, _, _ = m.tf_loss(*batch(tr, a.base_batch, nh + 1))
-            opt.zero_grad(); loss.backward(); opt.step(); tot += loss.item()
-        if e % 5 == 0 or e == a.base_epochs:
-            m.eval()
-            with torch.no_grad():
-                vl, pv, tv = m.tf_loss(*batch(va, 64, nh + 1))
-            print(f"  [1-step] epoch {e}: train MSE={tot/a.base_iters:.4f} val MSE={vl.item():.4f} "
-                  f"patchL2={torch.linalg.norm(pv-tv,dim=-1).mean():.3f}")
-    torch.save({"model": m.state_dict(), "arch": {"depth": a.depth, "heads": a.heads, "mlp_dim": a.mlp_dim}},
-               os.path.join(a.out, "base.pth"))
+    if a.init_base:
+        m.load_state_dict(torch.load(a.init_base, map_location=dev)["model"])
+        print(f"  loaded base {a.init_base}; SKIP phase 1")
+    else:
+        opt = torch.optim.AdamW(m.parameters(), lr=5e-4)
+        for e in range(1, a.base_epochs + 1):
+            m.train(); tot = 0.0
+            for _ in range(a.base_iters):
+                loss, _, _ = m.tf_loss(*batch(tr, a.base_batch, nh + 1))
+                opt.zero_grad(); loss.backward(); opt.step(); tot += loss.item()
+            if e % 5 == 0 or e == a.base_epochs:
+                m.eval()
+                with torch.no_grad():
+                    vl, pv, tv = m.tf_loss(*batch(va, 64, nh + 1))
+                print(f"  [1-step] epoch {e}: train MSE={tot/a.base_iters:.4f} val MSE={vl.item():.4f} "
+                      f"patchL2={torch.linalg.norm(pv-tv,dim=-1).mean():.3f}")
+        torch.save({"model": m.state_dict(), "arch": {"depth": a.depth, "heads": a.heads, "mlp_dim": a.mlp_dim}},
+                   os.path.join(a.out, "base.pth"))
 
     # ---------- phase 2: warm-start rollout fine-tune (H=roll_H) ----------
     H = a.roll_H; opt = torch.optim.AdamW(m.parameters(), lr=2e-4)
@@ -104,11 +111,16 @@ def main():
     for e in range(1, a.roll_epochs + 1):
         m.train(); tot = 0.0
         for _ in range(a.roll_iters):
-            loss = rollout_loss(*batch(tr, a.roll_batch, nh + H))
-            opt.zero_grad(); loss.backward(); opt.step(); tot += loss.item()
-        print(f"  [rollout H={H}] epoch {e}: train roll-loss={tot/a.roll_iters:.4f}")
-    torch.save({"model": m.state_dict(), "arch": {"depth": a.depth, "heads": a.heads, "mlp_dim": a.mlp_dim}},
-               os.path.join(a.out, "model.pth"))
+            opt.zero_grad()
+            for _acc in range(a.roll_accum):
+                loss = rollout_loss(*batch(tr, a.roll_batch, nh + H)) / a.roll_accum
+                loss.backward(); tot += loss.item()
+            opt.step()
+        print(f"  [rollout H={H} eff-batch={a.roll_batch * a.roll_accum}] epoch {e}: train roll-loss={tot/a.roll_iters:.4f}")
+        torch.save({"model": m.state_dict(), "arch": {"depth": a.depth, "heads": a.heads, "mlp_dim": a.mlp_dim}},
+                   os.path.join(a.out, f"roll_e{e}.pth"))
+        torch.save({"model": m.state_dict(), "arch": {"depth": a.depth, "heads": a.heads, "mlp_dim": a.mlp_dim}},
+                   os.path.join(a.out, "model.pth"))
 
     # ---------- phase 3: TF vs free-run GAP sweep ----------
     ck = torch.load(a.readout, map_location=dev)

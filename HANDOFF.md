@@ -1,6 +1,37 @@
 # HANDOFF — Language Table front-of-pipeline (data + render + G1)
 
-**Status (2026-06-16):** G0 ✅ · render dot-pusher fix ✅ · G1 ✅ (re-validated on dot render) · **G2 smoke ✅ machinery + in-principle plannability** (dynamics learns block motion; full-horizon CEM partial at smoke scale → next milestone) · **Relational goal-energy phase ✅ — Option 1 ADOPTED, dynamics diagnosed as the wall** (see `dino_wm/docs/RELATIONAL_ENERGY.md`). Canonical plan: `specs/PROJECT_DEFINITIVE_PLAN.md`. Next milestone: **corpus scale** → re-anchored TF floor + n=100 D2/oracle ceiling (+likely hierarchy for the long horizon).
+**Status (2026-06-17):** G0/G1/G2 ✅ · relational readout energy ✅ · dynamics rollout-trained (reliable ~K3.5) ✅ · **Phase H+E + improvement sweep DONE — relational SUCCESS 0.64 → 0.79 (n=100, sim-grounded, 0.88× the 0.90 oracle ceiling) via the hard-centroid readout decode (Lever A); frozen WM, no goal image.** See `dino_wm/docs/HIERARCHICAL_PLANNER.md`. Canonical plan: `specs/PROJECT_DEFINITIVE_PLAN.md`.
+
+## Improvement sweep (2026-06-17) — see docs/HIERARCHICAL_PLANNER.md §8b
+Autonomous, self-gated, every eval sim-grounded n=100 on the fixed seed-0 set. **Lever B**: held the
+0.05u metric (it IS the env's block2block success def, not a pose tolerance; oracle ceiling 0.90; no
+looser threshold justified = no inflation). **Lever A (+0.15, the win)**: red_moon was a *decode* deficit
+(soft-argmax leaked onto red_pentagon's same-color patches), NOT resolution-bound (binary probe 0.98 at
+224 → no 448 re-encode). Fix = `Readout.decode_hard` (per-patch argmax→centroid): red_moon 0.105→0.023u,
+loop success 0.14→0.64, overall 0.64→0.79. **Lever C (reverted, −0.18)**: explicit obstacle-detour
+waypoints hurt (MPC+straight carrot navigates obstruction implicitly; detours induce scatter). **Lever D
+(reverted, −0.07)**: near-goal damping slowed the final push (timeouts). **FINAL: 0.79 @ best config
+`--decode hard`** (Lever A only); the other levers are logged negatives. Residual floor = frozen WM 1-step
+over-prediction on long pushes (C & D both failed to move it). New code uncommitted (commit-when-asked):
+lt_{ipc,envserver,loop}.py + lt_diag_*.py + lt_oracle_metric.py + docs/HIERARCHICAL_PLANNER.md.
+
+## Phase H — closed-loop hierarchical planner (2026-06-17) — see docs/HIERARCHICAL_PLANNER.md
+The pre-Phase-H CEM was open-loop imagination; Phase H builds DINO-WM's real MPC (rollout cem_H=2,
+execute K=1, re-observe from the SIM, replan; success = sim's block2block verdict, never the WM).
+- **Env-boundary = two-process IPC** (base GPU planner ↔ langtable sim server over a localhost socket;
+  `lt_ipc.py`/`lt_envserver.py`/`lt_loop.py`). base has torch/no-pybullet, langtable has pybullet/no-torch
+  → process isolation, both halves untouched. Pre-flight + handshake clean (live latents at D1 ceiling).
+- **Gates (sim-grounded, n≥30):** H.0b low-level single-waypoint reach **0.70** (0.81 ex-red_moon) after
+  fixing (1) action-scale OOD [CEM 3–15× the oracle range → scatter; fixed act_clamp=0.04/sigma=0.012]
+  and (2) object-only cost no-contact [contact-approach shaping w_approach=0.5]. **H.3 relational 0.60
+  (n=30). E.2 n=100 ANCHOR = 0.64 (64/100); 0.72 (62/86) ex-red_moon** — within-0.07u 0.73, median 10
+  model-steps, mean start-dist 0.213u. E.1 anti-bulldoze satisfied by construction (0.017u; dont_disturb=0).
+- **Top lever:** red_moon is the weakest readout (drags as A and B; ~+11 pts if fixed). A few far pairs
+  (0.32–0.43u) make no progress (pusher-geometry/blocked → obstacle-aware waypoints).
+- **Next milestones (post-E.2, separate scoping):** Phase L (load-bearing/leak/decorrelation — the moat)
+  and Phase G (generalization — harder LT / 2nd domain / compositional).
+- New code NOT yet committed (commit-when-asked): `lt_{ipc,envserver,loop,diag_actions,diag_disturb}.py`,
+  `docs/HIERARCHICAL_PLANNER.md`.
 
 **Relational goal-energy (2026-06-16):** Built `R` (pusher-invariant per-block readout = productionized Gate-1 probe, geometry-fixed 0.32→0.3048), `h` (closed-form graded `‖pos_A−pos_B‖`, side-free — block2block has NO side relation), g-parser (cached `(start,target)` tuple). **D1 PASS** on real frames (id 0.943, pos<0.05 0.965, rel-succ 0.973, dist-MAE 0.026u). **D2 → DYNAMICS is the bottleneck, not the energy** (moving block PRED 0.144u vs REAL 0.035u; static 0.038u vs 0.027u — moving-only degradation = Risk #2). Embodiment-contamination floor DISSOLVED (R reads blocks through the dot). Do NOT escalate to slots; milestone = corpus scale. Scripts: `dino_wm/scripts/langtable/{lt_readout,lt_relplan}.py`; box `/workspace/readout/R.pth`.
 

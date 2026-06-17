@@ -50,7 +50,9 @@ def main():
     am_t = torch.tensor(am, device=dev); as_t = torch.tensor(as_, device=dev)
     lo = torch.tensor([0.15, -0.3048], device=dev); hi = torch.tensor([0.6, 0.3048], device=dev)
 
-    m = Dyn(nh, 1, fs).to(dev); m.load_state_dict(torch.load(a.model, map_location=dev)["model"]); m.eval()
+    ckm = torch.load(a.model, map_location=dev); ar = ckm.get("arch", {})
+    m = Dyn(nh, 1, fs, depth=ar.get("depth", 6), heads=ar.get("heads", 6), mlp_dim=ar.get("mlp_dim", 2048)).to(dev)
+    m.load_state_dict(ckm["model"]); m.eval()
     ck = torch.load(a.readout, map_location=dev)
     R = Readout(ck["nblk"], ck["half"], ck["cx"], ck["cy"]).to(dev); R.load_state_dict(ck["state"]); R.eval()
     A = np.array([bidx[str(va["start_block"][e])] for e in range(len(va["seq_lengths"]))])
