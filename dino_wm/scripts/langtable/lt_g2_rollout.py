@@ -29,7 +29,7 @@ from lt_g2 import Dyn, NP, sample_windows  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", default="/workspace/lt_cache_3k")
-    ap.add_argument("--init", required=True)              # base 1-step model to fine-tune from
+    ap.add_argument("--init", default="")                 # base model to warm-start; empty = from SCRATCH
     ap.add_argument("--out", default="/workspace/g2_3k_roll")
     ap.add_argument("--num_hist", type=int, default=3)
     ap.add_argument("--horizon", type=int, default=8)     # H rollout steps (target reliable horizon)
@@ -37,6 +37,7 @@ def main():
     ap.add_argument("--iters_per_epoch", type=int, default=500)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--ckpt_every", type=int, default=5)  # save ckpt_e{e}.pth for mid-run sweeps
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -55,9 +56,12 @@ def main():
         c["actions_n"] = ((c["actions"] - am) / as_).astype(np.float32)
 
     m = Dyn(nh, 1, fs).to(dev)
-    m.load_state_dict(torch.load(a.init, map_location=dev)["model"])
+    if a.init:
+        m.load_state_dict(torch.load(a.init, map_location=dev)["model"]); src = f"warm-start {a.init}"
+    else:
+        src = "from SCRATCH (random init)"
     opt = torch.optim.AdamW(m.parameters(), lr=a.lr)
-    print(f"fine-tune from {a.init}  H={H}  nf={nf}  batch={a.batch}")
+    print(f"{src}  H={H}  nf={nf}  batch={a.batch}  epochs={a.epochs}  lr={a.lr}")
 
     def rollout_loss(vis, prop_n, act_n, per_step=False):
         # vis (b,nf,196,d), prop_n/act_n (b,nf,*). Autoregress visual; GT proprio+action.
@@ -90,6 +94,8 @@ def main():
         print(f"  epoch {e}: train roll-loss={tot/a.iters_per_epoch:.4f}  val roll-loss={ps_.mean():.4f}  "
               f"(step1={ps_[0]:.3f} stepH={ps_[-1]:.3f})")
         torch.save({"model": m.state_dict()}, os.path.join(a.out, "model.pth"))
+        if a.ckpt_every and e % a.ckpt_every == 0:
+            torch.save({"model": m.state_dict()}, os.path.join(a.out, f"ckpt_e{e}.pth"))
     print(f"DONE -> {a.out}/model.pth  (H={H})")
 
 

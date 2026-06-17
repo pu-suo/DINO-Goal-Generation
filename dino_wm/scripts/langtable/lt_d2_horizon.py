@@ -73,17 +73,36 @@ def main():
             pos, _ = R.decode(vis[-1][None], tau=TAU)
         return pos[0, A[e]].cpu().numpy()
 
+    def tfK(e, K):
+        # TEACHER-FORCED: predict frame t=nh-1+K from GROUND-TRUTH history [t-nh:t] (single forward).
+        # = the 1-step error at trajectory position K. Flat across K => 1-step uniformly good (free-run
+        # divergence is pure compounding). Climbs with K => later/post-contact states are intrinsically
+        # hard even given perfect history => capacity/resolution/data, NOT compounding.
+        t = nh - 1 + K
+        wv = torch.tensor(va["visual"][e, t - nh:t].astype(np.float32), device=dev)[None]
+        wp = ((torch.tensor(va["proprio"][e, t - nh:t], device=dev) - pm_t) / ps_t)[None]
+        wa = ((torch.tensor(va["actions"][e, t - nh:t].astype(np.float32), device=dev) - am_t) / as_t)[None]
+        with torch.no_grad():
+            pred = m.predict(m.assemble(wv, wp, wa))[0, -1, :NP]
+            pos, _ = R.decode(pred[None], tau=TAU)
+        return pos[0, A[e]].cpu().numpy()
+
     print(f"model={a.model}")
+    print(f"  {'K':>4} {'FREE-run':>9} {'teacher-F':>9} {'gap':>7}   n")
     for K in [int(x) for x in a.ks.split(",")]:
-        errs, cnt = [], 0
+        fe, te, cnt = [], [], 0
         for e in range(len(va["seq_lengths"])):
             if int(va["seq_lengths"][e]) - nh < K:
                 continue
             gt = va["block_xy"][e, nh - 1 + K, A[e]]
-            errs.append(np.linalg.norm(rollK(e, K) - gt)); cnt += 1
+            fe.append(np.linalg.norm(rollK(e, K) - gt))
+            te.append(np.linalg.norm(tfK(e, K) - gt)); cnt += 1
             if cnt >= a.n:
                 break
-        print(f"  K={K:3d} steps:  moving-block PRED err={np.mean(errs):.4f}u  (n={cnt})")
+        f_, t_ = float(np.mean(fe)), float(np.mean(te))
+        print(f"  {K:>4} {f_:>9.4f} {t_:>9.4f} {f_ - t_:>7.4f}   {cnt}")
+    print("  TF flat + FREE climbs => pure COMPOUNDING (floor real). TF also climbs => intrinsic state "
+          "difficulty (capacity/resolution/data), NOT compounding -> hierarchy would be premature.")
     real = []
     for e in range(min(a.n, len(va["seq_lengths"]))):
         if int(va["seq_lengths"][e]) < nh + 1:

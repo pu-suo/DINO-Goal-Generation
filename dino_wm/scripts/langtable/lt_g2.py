@@ -26,13 +26,13 @@ NP = 196  # visual patches
 
 
 class Dyn(nn.Module):
-    def __init__(self, num_hist=3, num_pred=1, fs=5, dim=384, depth=6, heads=6):
+    def __init__(self, num_hist=3, num_pred=1, fs=5, dim=384, depth=6, heads=6, mlp_dim=2048):
         super().__init__()
         self.num_hist, self.num_pred, self.fs, self.dim = num_hist, num_pred, fs, dim
         self.proprio_embed = nn.Sequential(nn.Linear(2, dim), nn.LayerNorm(dim))
         self.action_embed = nn.Sequential(nn.Linear(fs * 2, dim), nn.LayerNorm(dim))
         self.predictor = ViTPredictor(num_patches=NP + 2, num_frames=num_hist, dim=dim,
-                                      depth=depth, heads=heads, mlp_dim=2048, dropout=0.1)
+                                      depth=depth, heads=heads, mlp_dim=mlp_dim, dropout=0.1)
 
     def assemble(self, vis, prop_n, act_n):  # (b,t,196,d),(b,t,2),(b,t,fs*2)
         p = self.proprio_embed(prop_n).unsqueeze(2)
