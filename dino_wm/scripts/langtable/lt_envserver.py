@@ -79,7 +79,7 @@ def main():
     def render():
         return lt_render.render_topdown(env, a.size, mode="dot", ee_xy=ee_xy(aenv))
 
-    def do_reset():
+    def do_reset(no_terminate=False):
         ts = None
         for _ in range(a.max_init_tries):
             ts = aenv.reset()
@@ -89,9 +89,16 @@ def main():
                     break
             except Exception:  # noqa: BLE001
                 continue
+        # L4-only harness: suppress the reward's episode-termination so the planner controls a
+        # MULTI-STEP chain (the env otherwise ends when its OWN random pair succeeds; physics/render
+        # unchanged; the frozen WM/readout and the GT-distance metric are untouched).
+        rc = env._reward_calculator
+        if no_terminate and not getattr(rc, "_noterm_wrapped", False):
+            _orig_reward = rc.reward
+            rc.reward = lambda s, _o=_orig_reward: (_o(s)[0], False)
+            rc._noterm_wrapped = True
         state["ts"] = ts
         state["done"] = bool(ts.is_last())
-        rc = env._reward_calculator
         return {
             "ok": True,
             "frame": render(),
@@ -139,6 +146,11 @@ def main():
     if sock is None:
         print("envserver: could not connect to planner", file=sys.stderr)
         sys.exit(1)
+    # create_connection leaves a 5s timeout on the socket; the server then blocks here waiting for the
+    # planner's NEXT command, and that gap = the planner's CEM-plan time. Under concurrent GPU load a
+    # plan can exceed 5s -> recv() times out -> the server exits and the planner sees a dropped conn.
+    # Use a generous command-wait timeout (still finite so a truly dead planner is detected).
+    sock.settimeout(1200)
     print(f"envserver: connected to {a.host}:{a.port}", file=sys.stderr)
 
     while True:
@@ -153,7 +165,7 @@ def main():
                         env.seed(int(msg["seed"]))
                     except Exception:  # noqa: BLE001  (older gym envs vary; seq resets still vary layout)
                         pass
-                resp = do_reset()
+                resp = do_reset(no_terminate=bool(msg.get("no_terminate", False)))
             elif cmd == "step":
                 resp = do_step(msg["actions"])
             elif cmd == "ping":

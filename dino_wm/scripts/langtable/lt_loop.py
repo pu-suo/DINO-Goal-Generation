@@ -80,8 +80,8 @@ class SimClient:
             raise RuntimeError(f"env-server error: {r.get('err')}\n{r.get('tb','')}")
         return r
 
-    def reset(self, seed=None):
-        return self.call(cmd="reset", seed=seed)
+    def reset(self, seed=None, no_terminate=False):
+        return self.call(cmd="reset", seed=seed, no_terminate=no_terminate)
 
     def step(self, env_actions):  # list of [dx,dy]
         return self.call(cmd="step", actions=[list(map(float, a)) for a in env_actions])
@@ -135,8 +135,11 @@ def rollout(model, ns, lo, hi, fs, nh, vis_hist, prop_hist, act_prefix, ee0, cem
 
 
 def waypoint_cost(R, grid, ai, waypoint, lo, hi, ee_final=None, contact_pt=None, w_approach=0.0,
-                  all_ref=None, protect_mask=None, dont_disturb=0.0, hard=False):
+                  all_ref=None, protect_mask=None, dont_disturb=0.0, hard=False, flat=False):
     """Low-level cost: decoded pos of block A vs the world waypoint + off-table penalty.
+    `flat=True` (L2 'none'): return a CONSTANT cost so CEM gets NO relational gradient -> the
+    optimizer cannot steer (measures success without command information). `d` is still the real
+    A->waypoint distance for logging.
     Optional CONTACT-APPROACH shaping (w_approach>0): pull the predicted final pusher (ee_final)
     to `contact_pt` = the point behind A along the push direction, so the CEM gets a gradient to
     make contact BEFORE A moves (object-only cost is otherwise flat until contact).
@@ -146,6 +149,8 @@ def waypoint_cost(R, grid, ai, waypoint, lo, hi, ee_final=None, contact_pt=None,
     pos, _ = (R.decode_hard(grid) if hard else R.decode(grid, tau=TAU))   # (B,nblk,2)
     pa = pos[:, ai]                              # (B,2)
     d = (pa - waypoint[None]).norm(dim=-1)
+    if flat:                                     # L2 'none': constant energy, no gradient
+        return torch.zeros_like(d), d
     cost = d.clone()
     if w_approach > 0 and ee_final is not None and contact_pt is not None:
         cost = cost + w_approach * (ee_final - contact_pt[None]).norm(dim=-1)
@@ -158,7 +163,9 @@ def waypoint_cost(R, grid, ai, waypoint, lo, hi, ee_final=None, contact_pt=None,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", default="preflight", choices=["preflight", "handshake", "h0b", "h3"])
+    ap.add_argument("--mode", default="preflight", choices=["preflight", "handshake", "h0b", "h3", "h3chain"])
+    ap.add_argument("--chain_len", type=int, default=2)   # L4: relational subtasks per episode (disjoint pairs)
+    ap.add_argument("--sub_steps", type=int, default=25)  # L4: model-step budget per subtask
     ap.add_argument("--wp_spacing", type=float, default=0.10)  # H.3 carrot: subgoal this far ahead of A toward B
     ap.add_argument("--dont_disturb", type=float, default=0.0)  # E.1 anti-bulldoze weight on non-target blocks
     ap.add_argument("--n", type=int, default=30)
@@ -175,6 +182,11 @@ def main():
     ap.add_argument("--obs_clearance", type=float, default=0.06)  # C: block within this of A->B = obstruction
     ap.add_argument("--conservative", type=float, default=0.0)  # Lever D: scale act_clamp/sigma near goal (0=off)
     ap.add_argument("--conservative_dist", type=float, default=0.08)  # D: "near goal" radius
+    ap.add_argument("--cmd", default="correct", choices=["correct", "none", "wrong", "swap"])  # L2 ablation
+    #   correct = drive true A->B (anchor).  none = flat/constant energy (no relational gradient).
+    #   wrong   = drive true A toward a DIFFERENT anchor (genuine wrong command; success symmetric so
+    #             an A<->B referent swap is a no-op -> use anchor-substitution).  swap = push true B->A
+    #             (symmetry control; should ~= correct). Success ALWAYS scored by the env on true (A,B).
     ap.add_argument("--cache", default="/workspace/lt_cache_3k")
     ap.add_argument("--model", default="/workspace/g2_3k_roll/model.pth")
     ap.add_argument("--readout", default="/workspace/readout_3k/R.pth")
@@ -218,6 +230,8 @@ def main():
         run_h0b(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir)
     elif a.mode == "h3":
         run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir)
+    elif a.mode == "h3chain":
+        run_h3chain(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir)
 
 
 def run_handshake_n(a, dev, enc, R, meta, lo, hi, script_dir):
@@ -282,7 +296,8 @@ def run_handshake_n(a, dev, enc, R, meta, lo, hi, script_dir):
 
 def low_level_plan(model, R, ns, fs, nh, lo, hi, vis_t, prop_t, actp_t, ee_cur, ai, waypoint,
                    H, pop, iters, elites, clamp, sigma0, contact_pt=None, w_approach=0.0,
-                   all_ref=None, protect_mask=None, dont_disturb=0.0, hard=False, mu_init=None):
+                   all_ref=None, protect_mask=None, dont_disturb=0.0, hard=False, mu_init=None,
+                   flat=False):
     """One CEM plan: pusher actions to drive decoded block A toward `waypoint` under the frozen
     dynamics (readout energy). Returns mu (H,fs*2) action plan + the elite's predicted A->wp dist.
     `clamp`/`sigma0` MUST match the training (oracle) action scale (oracle max |comp|~0.034) or the
@@ -298,7 +313,7 @@ def low_level_plan(model, R, ns, fs, nh, lo, hi, vis_t, prop_t, actp_t, ee_cur, 
             costs, dists = waypoint_cost(R, grid, ai, waypoint, lo, hi, ee_final=ee_final,
                                          contact_pt=contact_pt, w_approach=w_approach,
                                          all_ref=all_ref, protect_mask=protect_mask,
-                                         dont_disturb=dont_disturb, hard=hard)
+                                         dont_disturb=dont_disturb, hard=hard, flat=flat)
             idx = costs.topk(elites, largest=False).indices
             mu, sig = pop_a[idx].mean(0), pop_a[idx].std(0) + 1e-4
             best_d = dists[idx[0]].item()
@@ -467,7 +482,7 @@ def run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
     dec = (lambda g: R.decode_hard(g)) if hard else (lambda g: R.decode(g, tau=TAU))
     print(f"[h3] n={a.n} max_steps={a.max_steps} wp_spacing={a.wp_spacing} K={a.execute_steps} "
           f"cem_H={a.cem_H} pop={a.pop} iters={a.cem_iters} w_approach={a.w_approach} r_contact={a.r_contact} "
-          f"dont_disturb={a.dont_disturb} decode={a.decode} waypoints={a.waypoints} "
+          f"dont_disturb={a.dont_disturb} decode={a.decode} waypoints={a.waypoints} cmd={a.cmd} "
           f"conservative={a.conservative} act_clamp={a.act_clamp} act_sigma={a.act_sigma}")
     sim = SimClient(a.lt_python, script_dir, seed=a.seed)
     res = []
@@ -478,6 +493,19 @@ def run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
             ai = blocks.index(r["start_block"]); bi = blocks.index(r["target_block"])
             others = [k for k in range(nblk) if k not in (ai, bi)]
             protect = torch.zeros(nblk, device=dev); protect[others] = 1.0  # don't-disturb: all but A,B
+            # L2 swapped-command: the planner aims at (ai_plan,bi_plan); success is ALWAYS scored by
+            # the env + dAB on the TRUE (ai,bi). 'wrong' substitutes the anchor (the symmetric metric
+            # makes an A<->B swap a no-op); 'swap' pushes true-B->true-A (symmetry control); 'none' uses
+            # a flat energy (no relational gradient).
+            if a.cmd == "wrong":
+                cand = [k for k in range(nblk) if k not in (ai, bi)]
+                bi_plan = int(np.random.RandomState(1000 + ep).choice(cand)); ai_plan = ai
+            elif a.cmd == "swap":
+                ai_plan, bi_plan = bi, ai
+            else:
+                ai_plan, bi_plan = ai, bi
+            flat = (a.cmd == "none")
+            others_plan = [k for k in range(nblk) if k not in (ai_plan, bi_plan)]
             z = enc(np.asarray(r["frame"])[None])
             with torch.no_grad():
                 pos, _ = dec(z)
@@ -491,8 +519,8 @@ def run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
             max_drift = float(np.linalg.norm(pos - gt, axis=-1).mean())
             dAB_min, n_exec, mu_prev = d0, 0, None
             for step in range(a.max_steps):
-                curA = pos[ai]
-                target, dB = carrot_target(pos, ai, bi, others, a.wp_spacing, a.waypoints, a.obs_clearance)
+                curA = pos[ai_plan]
+                target, dB = carrot_target(pos, ai_plan, bi_plan, others_plan, a.wp_spacing, a.waypoints, a.obs_clearance)
                 dir_t = target - curA; ndir = float(np.linalg.norm(dir_t))
                 dir_t = dir_t / ndir if ndir > 1e-9 else np.array([1.0, 0.0], np.float32)
                 target_t = torch.tensor(target, device=dev, dtype=torch.float32)
@@ -505,10 +533,10 @@ def run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
                 vis_t = torch.stack(vis_hist[-nh:]); prop_t = torch.stack(prop_hist[-nh:])
                 actp_t = torch.stack(act_prefix[-(nh - 1):]) if nh > 1 else torch.zeros(0, fs * 2, device=dev)
                 mu, _ = low_level_plan(model, R, ns, fs, nh, lo, hi, vis_t, prop_t, actp_t, ee_cur,
-                                       ai, target_t, a.cem_H, a.pop, a.cem_iters, a.elites,
+                                       ai_plan, target_t, a.cem_H, a.pop, a.cem_iters, a.elites,
                                        clamp_e, sig_e, contact_pt=contact_pt, w_approach=a.w_approach,
                                        all_ref=all_ref, protect_mask=protect, dont_disturb=a.dont_disturb,
-                                       hard=hard, mu_init=mu_prev)
+                                       hard=hard, mu_init=mu_prev, flat=flat)
                 for es in range(a.execute_steps):
                     act_exec = mu[es].detach().cpu().numpy()
                     s = sim.step(act_exec.reshape(fs, 2))
@@ -569,6 +597,93 @@ def run_h3(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
     if len(ex_rm) < len(res):
         print(f"  success EXCLUDING red_moon (known weak readout): {np.mean(ex_rm):.2f} ({int(np.sum(ex_rm))}/{len(ex_rm)})")
     print(f"\n[H.3 VERDICT] the first real plannability number (sim-grounded). disturb>>0 => E.1 anti-bulldoze due.")
+
+
+def run_h3chain(a, dev, enc, model, R, ns, meta, fs, nh, lo, hi, script_dir):
+    """L4 (DIAGNOSTIC FORECAST, NOT a gate): multi-step relational chains. Per episode, a hand-built
+    sequence of chain_len DISJOINT (mover,anchor) pairs is executed back-to-back in ONE continuous
+    episode (env-termination suppressed via no_terminate); each subtask is the same carrot + K=1
+    closed-loop with re-observation between subtasks. per-subtask success = GT ||mover-anchor||<0.05
+    ever reached; END-TO-END = ALL pairs satisfied at the FINAL layout (captures later steps
+    disturbing earlier pairs). Forecasts Phase-G G.2 compositional risk BEFORE any VLM is built."""
+    blocks = meta["blocks"]; nblk = len(blocks)
+    hard = (a.decode == "hard")
+    dec = (lambda g: R.decode_hard(g)) if hard else (lambda g: R.decode(g, tau=TAU))
+    print(f"[h3chain] n={a.n} chain_len={a.chain_len} sub_steps={a.sub_steps} K={a.execute_steps} "
+          f"cem_H={a.cem_H} decode={a.decode} w_approach={a.w_approach} act_clamp={a.act_clamp} seed={a.seed}")
+    sim = SimClient(a.lt_python, script_dir, seed=a.seed)
+    res = []
+    try:
+        for ep in range(a.n):
+            r = sim.reset(seed=a.seed + ep, no_terminate=True)
+            gt = np.asarray(r["block_xy"])
+            rng = np.random.RandomState(a.seed + ep)
+            picks = list(rng.choice(nblk, size=2 * a.chain_len, replace=False))  # disjoint blocks
+            chain = [(int(picks[2 * k]), int(picks[2 * k + 1])) for k in range(a.chain_len)]
+            z = enc(np.asarray(r["frame"])[None])
+            with torch.no_grad():
+                pos, _ = dec(z)
+            pos = pos[0].cpu().numpy()
+            ee_cur = torch.tensor(np.asarray(r["ee"]), device=dev, dtype=torch.float32)
+            vis_hist = [z[0].clone()] * nh
+            prop_hist = [ee_cur.clone()] * nh
+            act_prefix = [torch.zeros(fs * 2, device=dev)] * max(nh - 1, 1)
+            sub_succ, sub_steps_used = [], []
+            for (mi, bi_p) in chain:
+                others_p = [k for k in range(nblk) if k not in (mi, bi_p)]
+                mu_prev, reached, used = None, False, 0
+                for step in range(a.sub_steps):
+                    curM = pos[mi]
+                    target, dB = carrot_target(pos, mi, bi_p, others_p, a.wp_spacing, a.waypoints, a.obs_clearance)
+                    dir_t = target - curM; ndir = float(np.linalg.norm(dir_t))
+                    dir_t = dir_t / ndir if ndir > 1e-9 else np.array([1.0, 0.0], np.float32)
+                    target_t = torch.tensor(target, device=dev, dtype=torch.float32)
+                    contact_pt = torch.tensor(curM - a.r_contact * dir_t, device=dev, dtype=torch.float32)
+                    vis_t = torch.stack(vis_hist[-nh:]); prop_t = torch.stack(prop_hist[-nh:])
+                    actp_t = torch.stack(act_prefix[-(nh - 1):]) if nh > 1 else torch.zeros(0, fs * 2, device=dev)
+                    mu, _ = low_level_plan(model, R, ns, fs, nh, lo, hi, vis_t, prop_t, actp_t, ee_cur,
+                                           mi, target_t, a.cem_H, a.pop, a.cem_iters, a.elites,
+                                           a.act_clamp, a.act_sigma, contact_pt=contact_pt,
+                                           w_approach=a.w_approach, hard=hard, mu_init=mu_prev)
+                    for es in range(a.execute_steps):
+                        act_exec = mu[es].detach().cpu().numpy()
+                        s = sim.step(act_exec.reshape(fs, 2))
+                        gt = np.asarray(s["block_xy"])
+                        z = enc(np.asarray(s["frame"])[None])
+                        with torch.no_grad():
+                            pos, _ = dec(z)
+                        pos = pos[0].cpu().numpy()
+                        ee_cur = torch.tensor(np.asarray(s["ee"]), device=dev, dtype=torch.float32)
+                        vis_hist.append(z[0].clone()); vis_hist = vis_hist[-nh:]
+                        prop_hist.append(ee_cur.clone()); prop_hist = prop_hist[-nh:]
+                        act_prefix.append(torch.tensor(act_exec, device=dev, dtype=torch.float32))
+                        act_prefix = act_prefix[-max(nh - 1, 1):]
+                        used += 1
+                        if float(np.linalg.norm(gt[mi] - gt[bi_p])) < RADIUS:
+                            reached = True
+                    mu_prev = torch.cat([mu[a.execute_steps:], torch.zeros(a.execute_steps, fs * 2, device=dev)], 0)
+                    if reached:
+                        break
+                sub_succ.append(bool(reached)); sub_steps_used.append(used)
+            final_ok = all(float(np.linalg.norm(gt[mi] - gt[bi_p])) < RADIUS for (mi, bi_p) in chain)
+            res.append(dict(sub=sub_succ, e2e=bool(final_ok), steps=sub_steps_used))
+            names = " ; ".join(f"{blocks[m]}->{blocks[b]}" for (m, b) in chain)
+            print(f"  ep{ep:02d} sub={['Y' if x else 'n' for x in sub_succ]} e2e={int(final_ok)} "
+                  f"steps={sub_steps_used}  [{names}]")
+    finally:
+        sim.close()
+    arr_e2e = np.array([x["e2e"] for x in res], dtype=float)
+    all_sub = np.array([s for x in res for s in x["sub"]], dtype=float)
+    persub = float(np.mean(all_sub)) if len(all_sub) else 0.0
+    print(f"\n=== L4 chain_len={a.chain_len} (n={len(res)}, DIAGNOSTIC forecast -- NOT a gate) ===")
+    print(f"  per-subtask success (GT<0.05 ever): {persub:.2f} ({int(all_sub.sum())}/{len(all_sub)})")
+    print(f"  END-TO-END (all pairs at FINAL layout): {arr_e2e.mean():.2f} ({int(arr_e2e.sum())}/{len(res)})")
+    print(f"  naive product persub^{a.chain_len} = {persub**a.chain_len:.2f}  (closed-loop replanning should beat this)")
+    for k in range(a.chain_len):
+        sk = np.array([x["sub"][k] for x in res if len(x["sub"]) > k], dtype=float)
+        print(f"    subtask#{k} success: {sk.mean():.2f} ({int(sk.sum())}/{len(sk)})")
+    print(f"\n[L4 VERDICT] forecast for Phase-G G.2: if END-TO-END decays toward unusable at 3-step, "
+          f"cross-subtask recovery needs work before the VLM. Diagnostic only; does NOT change L1-L3.")
 
 
 def run_preflight(a, dev, enc, encoder_base, model, R, ns, meta, fs, nh, bidx, lo, hi, script_dir):
